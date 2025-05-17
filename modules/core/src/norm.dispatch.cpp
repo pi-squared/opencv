@@ -287,10 +287,15 @@ double norm( InputArray _src, int normType, InputArray _mask )
 {
     CV_INSTRUMENT_REGION();
 
+    // Validate normType before masking
+    int normTypeOriginal = normType;
     normType &= NORM_TYPE_MASK;
-    CV_Assert( normType == NORM_INF || normType == NORM_L1 ||
+    // Check if after masking, the value is different from the valid values
+    // This ensures only explicitly provided valid values or valid flags are accepted
+    CV_Assert( (normType == NORM_INF || normType == NORM_L1 ||
                normType == NORM_L2 || normType == NORM_L2SQR ||
-               ((normType == NORM_HAMMING || normType == NORM_HAMMING2) && _src.type() == CV_8U) );
+               normType == NORM_HAMMING || normType == NORM_HAMMING2) && 
+               (normType == (normTypeOriginal & NORM_TYPE_MASK)) );
 
 #if defined HAVE_OPENCL
     double _result = 0;
@@ -565,10 +570,15 @@ double norm( InputArray _src1, InputArray _src2, int normType, InputArray _mask 
         return norm(_src1, _src2, normType & ~CV_RELATIVE, _mask)/(norm(_src2, normType, _mask) + DBL_EPSILON);
     }
 
+    // Validate normType before masking
+    int normTypeOriginal = normType;
     normType &= 7;
-    CV_Assert( normType == NORM_INF || normType == NORM_L1 ||
+    // Check if after masking, the value is different from the valid values
+    // This ensures only explicitly provided valid values or valid flags are accepted
+    CV_Assert( (normType == NORM_INF || normType == NORM_L1 ||
                normType == NORM_L2 || normType == NORM_L2SQR ||
-              ((normType == NORM_HAMMING || normType == NORM_HAMMING2) && src1.type() == CV_8U) );
+               normType == NORM_HAMMING || normType == NORM_HAMMING2) && 
+               (normType == (normTypeOriginal & 7)) );
 
     NormDiffFunc func = getNormDiffFunc(normType >> 1, depth == CV_16F ? CV_32F : depth);
     CV_Assert( (normType >> 1) >= 3 || func != 0 );
