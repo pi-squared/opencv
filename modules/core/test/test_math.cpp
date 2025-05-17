@@ -4029,5 +4029,23 @@ TEST(Core_FastMath, InlineIsInf)
     EXPECT_EQ( cvIsInf(suf.f), 0);
 }
 
+TEST(Core_Normalize, HammingNormTypes)
+{
+    // Test that normalize function works with NORM_HAMMING and NORM_HAMMING2 norm types
+    // Create a test matrix with uint8 type suitable for hamming norm
+    Mat src(5, 5, CV_8UC1, Scalar(5));
+    Mat dst;
+    
+    // Test normalization with NORM_HAMMING
+    EXPECT_NO_THROW(normalize(src, dst, 1.0, 0.0, NORM_HAMMING));
+    
+    // Test normalization with NORM_HAMMING2
+    EXPECT_NO_THROW(normalize(src, dst, 1.0, 0.0, NORM_HAMMING2));
+    
+    // Test with float type - this should still fail as Hamming is only for CV_8U
+    Mat src_f(5, 5, CV_32FC1, Scalar(1.0f));
+    EXPECT_ANY_THROW(normalize(src_f, dst, 1.0, 0.0, NORM_HAMMING));
+}
+
 }} // namespace
 /* End of file. */
