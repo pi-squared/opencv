@@ -573,13 +573,122 @@ double norm( InputArray _src1, InputArray _src2, int normType, InputArray _mask 
     NormDiffFunc func = getNormDiffFunc(normType >> 1, depth == CV_16F ? CV_32F : depth);
     CV_Assert( (normType >> 1) >= 3 || func != 0 );
 
+    // Optimization for continuous data without mask - fast path for common image comparison case
     if( src1.isContinuous() && src2.isContinuous() && mask.empty() )
     {
         size_t len = src1.total()*src1.channels();
         if( len == (size_t)(int)len )
         {
+            // Special case for 32F data - used in image comparisons
             if( src1.depth() == CV_32F )
             {
+                const float* data1f = src1.ptr<const float>();
+                const float* data2f = src2.ptr<const float>();
+                
+                // Directly use optimized implementations for common norm types
+                if( normType == NORM_L2 || normType == NORM_L2SQR )
+                {
+                    double result = 0;
+                    int j = 0;
+                    
+                    // Use SIMD-optimized implementation for L2 norm (float)
+                    #if (CV_SIMD || CV_SIMD_SCALABLE)
+                    v_float32 v_d0 = vx_setzero_f32(), v_d1 = vx_setzero_f32();
+                    v_float32 v_d2 = vx_setzero_f32(), v_d3 = vx_setzero_f32();
+                    for (; j <= (int)len - 4 * VTraits<v_float32>::vlanes(); j += 4 * VTraits<v_float32>::vlanes())
+                    {
+                        v_float32 t0 = v_sub(vx_load(data1f + j), vx_load(data2f + j));
+                        v_float32 t1 = v_sub(vx_load(data1f + j + VTraits<v_float32>::vlanes()), vx_load(data2f + j + VTraits<v_float32>::vlanes()));
+                        v_d0 = v_muladd(t0, t0, v_d0);
+                        v_float32 t2 = v_sub(vx_load(data1f + j + 2 * VTraits<v_float32>::vlanes()), vx_load(data2f + j + 2 * VTraits<v_float32>::vlanes()));
+                        v_d1 = v_muladd(t1, t1, v_d1);
+                        v_float32 t3 = v_sub(vx_load(data1f + j + 3 * VTraits<v_float32>::vlanes()), vx_load(data2f + j + 3 * VTraits<v_float32>::vlanes()));
+                        v_d2 = v_muladd(t2, t2, v_d2);
+                        v_d3 = v_muladd(t3, t3, v_d3);
+                    }
+                    result = v_reduce_sum(v_add(v_add(v_add(v_d0, v_d1), v_d2), v_d3));
+                    #endif
+                    
+                    // Process remaining elements
+                    for (; j < (int)len; j++)
+                    {
+                        float t = data1f[j] - data2f[j];
+                        result += t*t;
+                    }
+                    
+                    return normType == NORM_L2 ? std::sqrt(result) : result;
+                }
+                else if( normType == NORM_L1 )
+                {
+                    double result = 0;
+                    int j = 0;
+                    
+                    // Use SIMD-optimized implementation for L1 norm (float)
+                    #if (CV_SIMD || CV_SIMD_SCALABLE)
+                    v_float32 v_d0 = vx_setzero_f32(), v_d1 = vx_setzero_f32();
+                    v_float32 v_d2 = vx_setzero_f32(), v_d3 = vx_setzero_f32();
+                    for (; j <= (int)len - 4 * VTraits<v_float32>::vlanes(); j += 4 * VTraits<v_float32>::vlanes())
+                    {
+                        v_d0 = v_add(v_d0, v_absdiff(vx_load(data1f + j), vx_load(data2f + j)));
+                        v_d1 = v_add(v_d1, v_absdiff(vx_load(data1f + j + VTraits<v_float32>::vlanes()), vx_load(data2f + j + VTraits<v_float32>::vlanes())));
+                        v_d2 = v_add(v_d2, v_absdiff(vx_load(data1f + j + 2 * VTraits<v_float32>::vlanes()), vx_load(data2f + j + 2 * VTraits<v_float32>::vlanes())));
+                        v_d3 = v_add(v_d3, v_absdiff(vx_load(data1f + j + 3 * VTraits<v_float32>::vlanes()), vx_load(data2f + j + 3 * VTraits<v_float32>::vlanes())));
+                    }
+                    result = v_reduce_sum(v_add(v_add(v_add(v_d0, v_d1), v_d2), v_d3));
+                    #endif
+                    
+                    // Process remaining elements
+                    for (; j < (int)len; j++)
+                    {
+                        result += std::abs(data1f[j] - data2f[j]);
+                    }
+                    
+                    return result;
+                }
+                else if( normType == NORM_INF )
+                {
+                    float result = 0;
+                    int j = 0;
+                    
+                    // Use SIMD-optimized implementation for INF norm (float)
+                    #if (CV_SIMD || CV_SIMD_SCALABLE)
+                    v_float32 v_r = vx_setzero_f32();
+                    for (; j <= (int)len - VTraits<v_float32>::vlanes(); j += VTraits<v_float32>::vlanes())
+                    {
+                        v_r = v_max(v_r, v_absdiff(vx_load(data1f + j), vx_load(data2f + j)));
+                    }
+                    result = v_reduce_max(v_r);
+                    #endif
+                    
+                    // Process remaining elements
+                    for (; j < (int)len; j++)
+                    {
+                        result = std::max(result, std::abs(data1f[j] - data2f[j]));
+                    }
+                    
+                    return result;
+                }
+                
+                // Fall back to general implementation when not handled by optimizations above
+                const uchar* data1 = src1.ptr<const uchar>();
+                const uchar* data2 = src2.ptr<const uchar>();
+
+                if( normType == NORM_L2 || normType == NORM_L2SQR || normType == NORM_L1 )
+                {
+                    double result = 0;
+                    func(data1, data2, 0, (uchar*)&result, (int)len, 1);
+                    return normType == NORM_L2 ? std::sqrt(result) : result;
+                }
+                if( normType == NORM_INF )
+                {
+                    float result = 0;
+                    func(data1, data2, 0, (uchar*)&result, (int)len, 1);
+                    return result;
+                }
+            }
+            else
+            {
+                // For non-float types, use the standard implementation
                 const uchar* data1 = src1.ptr<const uchar>();
                 const uchar* data2 = src2.ptr<const uchar>();
 
