@@ -70,6 +70,31 @@
  */
 #define CV_RANDOM_INVERT 0x7FFFFFFF
 
+/*
+ * cvCreateTrainingSamples
+ *
+ * Create training samples applying random distortions to sample image and
+ * store them in .vec file. For reproducible results, set the global RNG seed
+ * using cv::setRNGSeed() before calling this function.
+ *
+ * filename        - .vec file name
+ * imgfilename     - sample image file name
+ * bgcolor         - background color for sample image
+ * bgthreshold     - background color threshold. Pixels those colors are in range
+ *   [bgcolor-bgthreshold, bgcolor+bgthreshold] are considered as transparent
+ * bgfilename      - background description file name. If not NULL samples
+ *   will be put on arbitrary background
+ * count           - desired number of samples
+ * invert          - if not 0 sample foreground pixels will be inverted
+ *   if invert == CV_RANDOM_INVERT then samples will be inverted randomly
+ * maxintensitydev - desired max intensity deviation of foreground samples pixels
+ * maxxangle       - max rotation angles
+ * maxyangle
+ * maxzangle
+ * showsamples     - if not 0 samples will be shown
+ * winwidth        - desired samples width
+ * winheight       - desired samples height
+ */
 void cvCreateTrainingSamples( const char* filename,
                               const char* imgfilename, int bgcolor, int bgthreshold,
                               const char* bgfilename, int count,
@@ -80,6 +105,29 @@ void cvCreateTrainingSamples( const char* filename,
                               int showsamples = 0,
                               int winwidth = 24, int winheight = 24 );
 
+/*
+ * cvCreateTestSamples
+ *
+ * Create test samples applying random distortions to sample image and
+ * store them in image files. For reproducible results, set the global RNG seed
+ * using cv::setRNGSeed() before calling this function.
+ *
+ * infoname        - file name to write sample descriptions
+ * imgfilename     - sample image file name
+ * bgcolor         - background color for sample image
+ * bgthreshold     - background color threshold
+ * bgfilename      - background description file name
+ * count           - desired number of samples
+ * invert          - if not 0 sample foreground pixels will be inverted
+ * maxintensitydev - desired max intensity deviation of foreground samples pixels
+ * maxxangle       - max rotation angles
+ * maxyangle
+ * maxzangle
+ * showsamples     - if not 0 samples will be shown
+ * winwidth        - desired samples width
+ * winheight       - desired samples height
+ * maxscale        - maximum scale factor for samples
+ */
 void cvCreateTestSamples( const char* infoname,
                           const char* imgfilename, int bgcolor, int bgthreshold,
                           const char* bgfilename, int count,

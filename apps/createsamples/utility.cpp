@@ -463,10 +463,11 @@ void icvRandomQuad( int width, int height, double quad[4][2],
     Mat rotMat( 3, 3, CV_64FC1, &rotMatData[0] );
     Mat vect( 3, 1, CV_64FC1, &vectData[0] );
 
-    rotVectData[0] = theRNG().uniform( -maxxangle, maxxangle );
-    rotVectData[1] = ( maxyangle - fabs( rotVectData[0] ) ) * theRNG().uniform( -1.0, 1.0 );
-    rotVectData[2] = theRNG().uniform( -maxzangle, maxzangle );
-    d = ( distfactor + distfactor2 * theRNG().uniform( -1.0, 1.0 ) ) * width;
+    // Use the global RNG instance which respects the seed set with cv::setRNGSeed
+    rotVectData[0] = theRNG().uniform(-maxxangle, maxxangle);
+    rotVectData[1] = (maxyangle - fabs(rotVectData[0])) * theRNG().uniform(-1.0, 1.0);
+    rotVectData[2] = theRNG().uniform(-maxzangle, maxzangle);
+    d = (distfactor + distfactor2 * theRNG().uniform(-1.0, 1.0)) * width;
 
     Rodrigues( rotVect, rotMat );
 
@@ -666,15 +667,16 @@ void icvPlaceDistortedSample( Mat background,
         cr.height = (int) (MAX( quad[2][1], quad[3][1] ) + 0.5F ) - cr.y;
     }
 
-    xshift = theRNG().uniform( 0., maxshiftf );
-    yshift = theRNG().uniform( 0., maxshiftf );
+    // Use the global RNG instance which respects the seed set with cv::setRNGSeed
+    xshift = theRNG().uniform(0., maxshiftf);
+    yshift = theRNG().uniform(0., maxshiftf);
 
-    cr.x -= (int) ( xshift * cr.width  );
-    cr.y -= (int) ( yshift * cr.height );
-    cr.width  = (int) ((1.0 + maxshiftf) * cr.width );
-    cr.height = (int) ((1.0 + maxshiftf) * cr.height);
+    cr.x -= (int)(xshift * cr.width);
+    cr.y -= (int)(yshift * cr.height);
+    cr.width  = (int)((1.0 + maxshiftf) * cr.width);
+    cr.height = (int)((1.0 + maxshiftf) * cr.height);
 
-    randscale = theRNG().uniform( 0., maxscalef );
+    randscale = theRNG().uniform(0., maxscalef);
     cr.x -= (int) ( 0.5 * randscale * cr.width  );
     cr.y -= (int) ( 0.5 * randscale * cr.height );
     cr.width  = (int) ((1.0 + randscale) * cr.width );
@@ -693,7 +695,8 @@ void icvPlaceDistortedSample( Mat background,
     resize( data->img(roi & Rect(Point(0,0), data->img.size())), img, img.size(), 0, 0, INTER_LINEAR_EXACT);
     resize( data->maskimg(roi & Rect(Point(0, 0), data->maskimg.size())), maskimg, maskimg.size(), 0, 0, INTER_LINEAR_EXACT);
 
-    forecolordev = theRNG().uniform( -maxintensitydev, maxintensitydev );
+    // Use the global RNG instance which respects the seed set with cv::setRNGSeed
+    forecolordev = theRNG().uniform(-maxintensitydev, maxintensitydev);
 
     for( r = 0; r < img.rows; r++ )
     {
@@ -832,7 +835,8 @@ void icvGetNextFromBackgroundData( CvBackgroundData* data,
         {
             round = data->round;
 
-            data->last = theRNG().uniform( 0, RAND_MAX ) % data->count;
+            // Use the global RNG instance which respects the seed set with cv::setRNGSeed
+            data->last = theRNG().uniform(0, data->count);
 
 #ifdef CV_VERBOSE
             printf( "Open background image: %s\n", data->filename[data->last] );
@@ -1071,7 +1075,8 @@ void cvCreateTrainingSamples( const char* filename,
 
                 if( invert == CV_RANDOM_INVERT )
                 {
-                    inverse = theRNG().uniform( 0, 2 );
+                    // Use the global RNG instance which respects the seed set with cv::setRNGSeed
+                    inverse = theRNG().uniform(0, 2);
                 }
                 icvPlaceDistortedSample( sample, inverse, maxintensitydev,
                     maxxangle, maxyangle, maxzangle,
@@ -1181,16 +1186,18 @@ void cvCreateTestSamples( const char* infoname,
 
                 if( maxscale < 1.0F ) continue;
 
-                scale = theRNG().uniform( 1.0F, (float)maxscale );
+                // Use the global RNG instance which respects the seed set with cv::setRNGSeed
+                scale = theRNG().uniform(1.0F, (float)maxscale);
 
-                width = (int) (scale * winwidth);
-                height = (int) (scale * winheight);
-                x = (int) ( theRNG().uniform( 0.1, 0.8 ) * (cvbgreader->src.cols - width));
-                y = (int) ( theRNG().uniform( 0.1, 0.8 ) * (cvbgreader->src.rows - height));
+                width = (int)(scale * winwidth);
+                height = (int)(scale * winheight);
+                x = (int)(theRNG().uniform(0.1, 0.8) * (cvbgreader->src.cols - width));
+                y = (int)(theRNG().uniform(0.1, 0.8) * (cvbgreader->src.rows - height));
 
                 if( invert == CV_RANDOM_INVERT )
                 {
-                    inverse = theRNG().uniform( 0, 2 );
+                    // Use the global RNG instance which respects the seed set with cv::setRNGSeed
+                    inverse = theRNG().uniform(0, 2);
                 }
                 icvPlaceDistortedSample( cvbgreader->src(Rect(x, y, width, height)), inverse, maxintensitydev,
                                          maxxangle, maxyangle, maxzangle,
