@@ -473,6 +473,7 @@ static bool openvx_gaussianBlur(InputArray _src, OutputArray _dst, Size ksize,
 #define IPP_DISABLE_GAUSSIAN_BLUR_LARGE_KERNELS_1TH 1
 #define IPP_DISABLE_GAUSSIAN_BLUR_16SC4_1TH 1
 #define IPP_DISABLE_GAUSSIAN_BLUR_32FC4_1TH 1
+#define IPP_DISABLE_GAUSSIAN_BLUR_32F 1      // Fix for issue #11303
 
 // IW 2017u2 has bug which doesn't allow use of partial inMem with tiling
 #if IPP_VERSION_X100 < 201900
@@ -562,6 +563,9 @@ static bool ipp_GaussianBlur(cv::Mat& src, cv::Mat& dst, Size ksize,
         if (IPP_DISABLE_GAUSSIAN_BLUR_16SC4_1TH && (threads == 1 && src.type() == CV_16SC4))
             return false;
         if (IPP_DISABLE_GAUSSIAN_BLUR_32FC4_1TH && (threads == 1 && src.type() == CV_32FC4))
+            return false;
+        // Disable IPP for CV_32F type due to issue #11303 (memory access problems)
+        if (IPP_DISABLE_GAUSSIAN_BLUR_32F && src.depth() == CV_32F)
             return false;
 
         if(IPP_GAUSSIANBLUR_PARALLEL && threads > 1 && iwSrc.m_size.height/(threads * 4) >= ksize.height/2) {
