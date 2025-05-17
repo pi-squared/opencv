@@ -847,7 +847,8 @@ void normalize(InputArray _src, InputOutputArray _dst, double a, double b,
         else
             shift = dmin - smin*scale;
     }
-    else if( norm_type == CV_L2 || norm_type == CV_L1 || norm_type == CV_C )
+    else if( norm_type == CV_L2 || norm_type == CV_L1 || norm_type == CV_C || 
+              (type == CV_8U && (norm_type == NORM_HAMMING || norm_type == NORM_HAMMING2)) )
     {
         scale = norm( _src, norm_type, _mask );
         scale = scale > DBL_EPSILON ? a/scale : 0.;
