@@ -1323,6 +1323,7 @@ NormFunc getNormFunc(int normType, int depth)
             (NormFunc)GET_OPTIMIZED(normL2_32s), (NormFunc)GET_OPTIMIZED(normL2_32f), (NormFunc)normL2_64f, 0
         }
     };
+    if (normType >= 3 || normType < 0) return nullptr;
 
     return normTab[normType][depth];
 }
