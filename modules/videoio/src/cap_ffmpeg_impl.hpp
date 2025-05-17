@@ -2917,8 +2917,18 @@ bool CvVideoWriter_FFMPEG::open( const char * filename, int fourcc,
         // we allow frames of odd width or height, but in this case we truncate
         // the rightmost column/the bottom row. Probably, this should be handled more elegantly,
         // but some internal functions inside FFMPEG swscale require even width/height.
+        int original_width = width;
+        int original_height = height;
         width &= -2;
         height &= -2;
+        
+        // Log warning if dimensions were adjusted
+        if (width != original_width || height != original_height) {
+            CV_LOG_WARNING(NULL, "FFMPEG: Frame dimensions adjusted from " << original_width << "x" << original_height 
+                                << " to " << width << "x" << height 
+                                << " (FFMPEG requires even width and height)");
+        }
+        
         if (width <= 0 || height <= 0)
             return false;
     }

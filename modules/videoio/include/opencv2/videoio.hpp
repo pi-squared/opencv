@@ -1090,7 +1090,9 @@ public:
     other values as fourcc code: see [ObjectType](http://mp4ra.org/#/codecs),
     so you may receive a warning message from OpenCV about fourcc code conversion.
     @param fps Framerate of the created video stream.
-    @param frameSize Size of the video frames.
+    @param frameSize Size of the video frames. Note: When using the FFMPEG backend,
+    frames with odd width or height will be automatically adjusted to even values
+    (the rightmost column/bottom row will be truncated) due to FFMPEG requirements.
     @param isColor If it is not zero, the encoder will expect and encode color frames, otherwise it
     will work with grayscale frames.
 
@@ -1101,9 +1103,9 @@ public:
     - Most codecs are lossy. If you want lossless video file you need to use a lossless codecs
       (eg. FFMPEG FFV1, Huffman HFYU, Lagarith LAGS, etc...)
     - If FFMPEG is enabled, using `codec=0; fps=0;` you can create an uncompressed (raw) video file.
-    - If FFMPEG is used, we allow frames of odd width or height, but in this case we truncate
-      the rightmost column/the bottom row. Probably, this should be handled more elegantly,
-      but some internal functions inside FFMPEG swscale require even width/height.
+    - IMPORTANT: If FFMPEG is used, frames with odd width or height will have the rightmost column
+      or bottom row truncated to make dimensions even, as required by some internal FFMPEG functions.
+      For example, a 1699x960 frame will be saved as 1698x960.
     */
     CV_WRAP VideoWriter(const String& filename, int fourcc, double fps,
                 Size frameSize, bool isColor = true);
@@ -1138,6 +1140,10 @@ public:
     The method opens video writer. Parameters are the same as in the constructor
     VideoWriter::VideoWriter.
     @return `true` if video writer has been successfully initialized
+
+    @note When using the FFMPEG backend, frames with odd width or height will have 
+    the rightmost column or bottom row truncated to make dimensions even, as required 
+    by some internal FFMPEG functions.
 
     The method first calls VideoWriter::release to close the already opened file.
      */
@@ -1186,6 +1192,9 @@ public:
 
     The function/method writes the specified image to video file. It must have the same size as has
     been specified when opening the video writer.
+
+    @note When using the FFMPEG backend with frames of odd width or height, the rightmost column
+    or bottom row may be truncated to ensure even dimensions as required by FFMPEG.
      */
     CV_WRAP virtual void write(InputArray image);
 
