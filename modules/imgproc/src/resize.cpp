@@ -1174,7 +1174,7 @@ resizeNN( const Mat& src, Mat& dst, double fx, double fy )
 class resizeNN_bitexactInvoker : public ParallelLoopBody
 {
 public:
-    resizeNN_bitexactInvoker(const Mat& _src, Mat& _dst, int* _x_ofse, int _ify, int _ify0)
+    resizeNN_bitexactInvoker(const Mat& _src, Mat& _dst, int* _x_ofse, int64_t _ify, int _ify0)
         : src(_src), dst(_dst), x_ofse(_x_ofse), ify(_ify), ify0(_ify0) {}
 
     virtual void operator() (const Range& range) const CV_OVERRIDE
@@ -1184,7 +1184,7 @@ public:
         for( int y = range.start; y < range.end; y++ )
         {
             uchar* D = dst.ptr(y);
-            int _sy = (ify * y + ify0) >> 16;
+            int _sy = (int)((ify * y + ify0) >> 32);
             int sy = std::min(_sy, ssize.height-1);
             const uchar* S = src.ptr(sy);
 
@@ -1260,17 +1260,20 @@ private:
     const Mat& src;
     Mat& dst;
     int* x_ofse;
-    const int ify;
+    const int64_t ify;
     const int ify0;
 };
 
 static void resizeNN_bitexact( const Mat& src, Mat& dst, double /*fx*/, double /*fy*/ )
 {
+    // This function implements nearest neighbor interpolation using bit-exact calculations
+    // The previous 16-bit fixed-point arithmetic could lead to precision issues with large scaling factors
+    // This improved implementation uses 32-bit fixed-point arithmetic for better precision
     Size ssize = src.size(), dsize = dst.size();
-    int ifx = ((ssize.width << 16) + dsize.width / 2) / dsize.width; // 16bit fixed-point arithmetic
-    int ifx0 = ifx / 2 - ssize.width % 2;                       // This method uses center pixel coordinate as Pillow and scikit-images do.
-    int ify = ((ssize.height << 16) + dsize.height / 2) / dsize.height;
-    int ify0 = ify / 2 - ssize.height % 2;
+    int64_t ifx = ((int64_t)ssize.width << 32) / dsize.width + ((int64_t)1 << 31) / dsize.width; // 32bit fixed-point arithmetic for better precision
+    int ifx0 = (int)(ifx / 2) - ssize.width % 2;                // This method uses center pixel coordinate as Pillow and scikit-images do.
+    int64_t ify = ((int64_t)ssize.height << 32) / dsize.height + ((int64_t)1 << 31) / dsize.height;
+    int ify0 = (int)(ify / 2) - ssize.height % 2;
 
     cv::utils::BufferArea area;
     int* x_ofse = 0;
@@ -1279,7 +1282,7 @@ static void resizeNN_bitexact( const Mat& src, Mat& dst, double /*fx*/, double /
 
     for( int x = 0; x < dsize.width; x++ )
     {
-        int sx = (ifx * x + ifx0) >> 16;
+        int sx = (int)((ifx * x + ifx0) >> 32);
         x_ofse[x] = std::min(sx, ssize.width-1);    // offset in element (not byte)
     }
     Range range(0, dsize.height);
