@@ -2003,6 +2003,10 @@ The function solveCubic finds the real roots of a cubic equation:
 \f[x^3 +  \texttt{coeffs} [0] x^2 +  \texttt{coeffs} [1] x +  \texttt{coeffs} [2] = 0\f]
 
 The roots are stored in the roots array.
+
+For cubic equations with very small leading coefficients (coeffs[0] is close to zero), the function 
+handles numerical instability by treating the equation as approximately quadratic.
+
 @param coeffs equation coefficients, an array of 3 or 4 elements.
 @param roots output array of real roots that has 1 or 3 elements.
 @return number of real roots. It can be 0, 1 or 2.

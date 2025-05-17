@@ -2410,6 +2410,31 @@ void Core_SolvePolyTest::run( int )
         double prec_5623 = cv::solveCubic(coeffs_5623, r_5623);
         pass = pass && r_5623.at<double>(0) == 0 && r_5623.at<double>(1) == 0 && r_5623.at<double>(2) == 0;
         pass = pass && prec_5623 == 1;
+        
+        // Test with very small cubic coefficient
+        cv::Mat coeffs_small(4, 1, CV_64FC1);
+        cv::Mat r_small(3, 1, CV_64FC2);
+        coeffs_small.at<double>(0) = 2e-13;  // Very small cubic coefficient
+        coeffs_small.at<double>(1) = 1.0;
+        coeffs_small.at<double>(2) = -2.0;
+        coeffs_small.at<double>(3) = 1.0;
+        
+        int num_roots = cv::solveCubic(coeffs_small, r_small);
+        // With small a0 coefficient, we expect to find the quadratic equation roots
+        // For x^2 - 2x + 1 = 0, the only root is x = 1 with multiplicity 2
+        // But we only return distinct roots, so num_roots should be 1
+        pass = pass && num_roots == 1;
+        // Check that the root we found is close to 1.0
+        pass = pass && fabs(r_small.at<double>(0) - 1.0) < 1e-9;
+        
+        // Check that the root we found actually satisfies the original equation
+        double root = r_small.at<double>(0);
+        double eval = coeffs_small.at<double>(0) * root * root * root + 
+                     coeffs_small.at<double>(1) * root * root + 
+                     coeffs_small.at<double>(2) * root + 
+                     coeffs_small.at<double>(3);
+        // The result should be very close to zero
+        pass = pass && fabs(eval) < 1e-10;
 
         if (!pass)
         {

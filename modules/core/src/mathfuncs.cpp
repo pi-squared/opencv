@@ -1622,6 +1622,29 @@ int cv::solveCubic( InputArray _coeffs, OutputArray _roots )
             }
         }
     }
+    else if( fabs(a0) < 1e-8 )
+    {
+        // If a0 is very small but non-zero, the equation is nearly quadratic.
+        // Treat it as a quadratic equation for numerical stability
+        double d = a2*a2 - 4*a1*a3;
+        if( d >= 0 )
+        {
+            d = std::sqrt(d);
+            double q1 = (-a2 + d) * 0.5;
+            double q2 = (a2 + d) * -0.5;
+            if( fabs(q1) > fabs(q2) )
+            {
+                x0 = q1 / a1;
+                x1 = a3 / q1;
+            }
+            else
+            {
+                x0 = q2 / a1;
+                x1 = a3 / q2;
+            }
+            n = d > 0 ? 2 : 1;
+        }
+    }
     else
     {
         a0 = 1./a0;
