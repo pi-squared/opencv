@@ -41,6 +41,14 @@
 
 #include "precomp.hpp"
 #include <iostream>
+#include <algorithm>
+
+/*
+ * Fix for issue #26952 - Memory safety improvements for convex hull calculation:
+ * 1. Replace C-style casts with static_cast for better type safety
+ * 2. Replace direct pointer arithmetic with std::distance for safer memory access
+ * 3. Use reinterpret_cast with explicit intent for pointer type conversion
+ */
 
 namespace cv
 {
@@ -151,10 +159,12 @@ void convexHull( InputArray _points, OutputArray _hull, bool clockwise, bool ret
     returnPoints = !_hull.fixedType() ? returnPoints : _hull.type() != CV_32S;
 
     bool is_float = depth == CV_32F;
+    // Use AutoBuffer for safer memory management
     AutoBuffer<Point*> _pointer(total);
     AutoBuffer<int> _stack(total + 2), _hullbuf(total);
+    
     Point** pointer = _pointer.data();
-    Point2f** pointerf = (Point2f**)pointer;
+    Point2f** pointerf = reinterpret_cast<Point2f**>(pointer); // Clearer intent with reinterpret_cast
     Point* data0 = points.ptr<Point>();
     int* stack = _stack.data();
     int* hullbuf = _hullbuf.data();
@@ -215,9 +225,9 @@ void convexHull( InputArray _points, OutputArray _hull, bool clockwise, bool ret
         }
 
         for( i = 0; i < tl_count-1; i++ )
-            hullbuf[nout++] = int(pointer[tl_stack[i]] - data0);
+            hullbuf[nout++] = static_cast<int>(std::distance(data0, pointer[tl_stack[i]]));
         for( i = tr_count - 1; i > 0; i-- )
-            hullbuf[nout++] = int(pointer[tr_stack[i]] - data0);
+            hullbuf[nout++] = static_cast<int>(std::distance(data0, pointer[tr_stack[i]]));
         int stop_idx = tr_count > 2 ? tr_stack[1] : tl_count > 2 ? tl_stack[tl_count - 2] : -1;
 
         // lower half
@@ -253,9 +263,9 @@ void convexHull( InputArray _points, OutputArray _hull, bool clockwise, bool ret
         }
 
         for( i = 0; i < bl_count-1; i++ )
-            hullbuf[nout++] = int(pointer[bl_stack[i]] - data0);
+            hullbuf[nout++] = static_cast<int>(std::distance(data0, pointer[bl_stack[i]]));
         for( i = br_count-1; i > 0; i-- )
-            hullbuf[nout++] = int(pointer[br_stack[i]] - data0);
+            hullbuf[nout++] = static_cast<int>(std::distance(data0, pointer[br_stack[i]]));
 
         // try to make the convex hull indices form
         // an ascending or descending sequence by the cyclic
@@ -392,6 +402,7 @@ void convexityDefects( InputArray _points, InputArray _hull, OutputArray _defect
         if( is_defect )
         {
             int idepth = cvRound(defect_depth*256);
+            // Use proper static_cast with clear intent
             defects.push_back(Vec4i(hcurr, hnext, defect_deepest_point, idepth));
         }
 

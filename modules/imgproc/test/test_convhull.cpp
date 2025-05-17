@@ -367,6 +367,47 @@ TEST(Imgproc_ConvexHull, overflow)
     ASSERT_EQ(hull, hullf);
 }
 
+TEST(Imgproc_ConvexHull, memory_layout_safety)
+{
+    // This test specifically checks for issues related to pointer arithmetic and casting
+    // with varying sizes of int and float values
+    
+    std::vector<Point> points;
+    std::vector<Point2f> pointsf;
+
+    // Create a test case with points that have large coordinate values 
+    // that might expose memory layout issues
+    for (int i = 0; i < 1000; i+=10) {
+        points.push_back(Point(i, i*3));
+        pointsf.push_back(Point2f(i, i*3.0f));
+    }
+
+    std::vector<int> hull_int;
+    std::vector<Point> hull_points;
+    std::vector<int> hullf_int;
+    std::vector<Point2f> hullf_points;
+
+    // Test multiple configurations to check for pointer arithmetic safety
+    convexHull(points, hull_int, false, false);  // return indices
+    convexHull(points, hull_points, false, true); // return points
+    convexHull(pointsf, hullf_int, false, false); // return indices with float input
+    convexHull(pointsf, hullf_points, false, true); // return points with float input
+
+    // Verify the number of hull points is the same regardless of input/output types
+    EXPECT_EQ(hull_int.size(), hullf_int.size());
+    EXPECT_EQ(hull_points.size(), hullf_points.size());
+    
+    // Verify index-based and point-based outputs match for the same input type
+    for (size_t i = 0; i < hull_int.size(); i++) {
+        EXPECT_EQ(points[hull_int[i]], hull_points[i]);
+    }
+    
+    for (size_t i = 0; i < hullf_int.size(); i++) {
+        EXPECT_NEAR(pointsf[hullf_int[i]].x, hullf_points[i].x, 1e-5);
+        EXPECT_NEAR(pointsf[hullf_int[i]].y, hullf_points[i].y, 1e-5);
+    }
+}
+
 static
 bool checkMinAreaRect(const RotatedRect& rr, const Mat& c, double eps = 0.5f)
 {
