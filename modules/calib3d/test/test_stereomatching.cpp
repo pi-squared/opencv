@@ -921,35 +921,73 @@ protected:
 TEST(Calib3d_StereoSGBM, regression) { CV_StereoSGBMTest test; test.safe_run(); }
 
 TEST(Calib3d_StereoSGBM, deterministic) {
-    cv::Ptr<cv::StereoSGBM> matcher = cv::StereoSGBM::create(16, 11);
-
-    // Expect throw error (non-determinism case)
-    int widthNarrow = 28;
+    // The determinism check in StereoSGBM is:
+    // width - (minDisparity + numDisparities) > SAD_window_size/2
+    
+    // Test case 1: Use default settings with a narrow image (should throw)
+    // Default settings: minDisparity=16, numDisparities=11, blockSize=3
+    // Required width > 16 + 11 + 3/2 = 28.5, so width must be at least 29
+    cv::Ptr<cv::StereoSGBM> matcher1 = cv::StereoSGBM::create(16, 11);
     int height = 15;
-
+    int widthNarrow = 28; // Not enough width for deterministic results
+    
     cv::Mat leftNarrow(height, widthNarrow, CV_8UC1);
     cv::Mat rightNarrow(height, widthNarrow, CV_8UC1);
     randu(leftNarrow, cv::Scalar(0), cv::Scalar(255));
     randu(rightNarrow, cv::Scalar(0), cv::Scalar(255));
     cv::Mat disp;
 
-    EXPECT_THROW(matcher->compute(leftNarrow, rightNarrow, disp), cv::Exception);
+    EXPECT_THROW(matcher1->compute(leftNarrow, rightNarrow, disp), cv::Exception);
 
-    // Deterministic case, image is sufficiently large for StereSGBM parameters
-    int widthWide = 40;
+    // Test case 2: Use default settings with width exactly on the boundary
+    int widthBoundary = 29; // Just enough width for deterministic results
+    cv::Mat leftBoundary(height, widthBoundary, CV_8UC1);
+    cv::Mat rightBoundary(height, widthBoundary, CV_8UC1);
+    randu(leftBoundary, cv::Scalar(0), cv::Scalar(255));
+    randu(rightBoundary, cv::Scalar(0), cv::Scalar(255));
+    
+    // This should not throw
+    matcher1->compute(leftBoundary, rightBoundary, disp);
+    
+    // Test case 3: Use default settings with a wider image 
+    int widthWide = 40; // Well above minimum width for deterministic results
     cv::Mat leftWide(height, widthWide, CV_8UC1);
     cv::Mat rightWide(height, widthWide, CV_8UC1);
     randu(leftWide, cv::Scalar(0), cv::Scalar(255));
     randu(rightWide, cv::Scalar(0), cv::Scalar(255));
     cv::Mat disp1, disp2;
+    
+    // Verify multiple computations give identical results
     for (int i = 0; i < 10; i++) {
-        matcher->compute(leftWide, rightWide, disp1);
-        matcher->compute(leftWide, rightWide, disp2);
+        matcher1->compute(leftWide, rightWide, disp1);
+        matcher1->compute(leftWide, rightWide, disp2);
         cv::Mat dst;
         cv::bitwise_xor(disp1, disp2, dst);
         EXPECT_EQ(cv::countNonZero(dst), 0);
     }
-
+    
+    // Test case 4: Use a larger block size and verify the width requirement increases
+    cv::Ptr<cv::StereoSGBM> matcher2 = cv::StereoSGBM::create(16, 11, 7); // 7x7 block size
+    // Required width > 16 + 11 + 7/2 = 30.5, so width must be at least 31
+    
+    // Width 30 should throw with 7x7 block
+    int widthNotEnough = 30;
+    cv::Mat leftNotEnough(height, widthNotEnough, CV_8UC1);
+    cv::Mat rightNotEnough(height, widthNotEnough, CV_8UC1);
+    randu(leftNotEnough, cv::Scalar(0), cv::Scalar(255));
+    randu(rightNotEnough, cv::Scalar(0), cv::Scalar(255));
+    
+    EXPECT_THROW(matcher2->compute(leftNotEnough, rightNotEnough, disp), cv::Exception);
+    
+    // Width 31 should work with 7x7 block
+    int widthEnough = 31;
+    cv::Mat leftEnough(height, widthEnough, CV_8UC1);
+    cv::Mat rightEnough(height, widthEnough, CV_8UC1);
+    randu(leftEnough, cv::Scalar(0), cv::Scalar(255));
+    randu(rightEnough, cv::Scalar(0), cv::Scalar(255));
+    
+    // This should not throw
+    matcher2->compute(leftEnough, rightEnough, disp);
 }
 
 TEST(Calib3d_StereoSGBM_HH4, regression)
