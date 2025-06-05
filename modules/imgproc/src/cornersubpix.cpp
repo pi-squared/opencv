@@ -40,6 +40,7 @@
 //
 //M*/
 #include "precomp.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 void cv::cornerSubPix( InputArray _image, InputOutputArray _corners,
                        Size win, Size zeroZone, TermCriteria criteria )
@@ -109,11 +110,68 @@ void cv::cornerSubPix( InputArray _image, InputOutputArray _corners,
             const float* subpix = &subpix_buf.at<float>(1,1);
 
             // process gradient
+#if CV_SIMD
+            const int simd_width = v_float32::nlanes;
+            v_float32 v_a = vx_setzero_f32();
+            v_float32 v_b = vx_setzero_f32();
+            v_float32 v_c = vx_setzero_f32();
+            v_float32 v_bb1 = vx_setzero_f32();
+            v_float32 v_bb2 = vx_setzero_f32();
+#endif
+
             for( i = 0, k = 0; i < win_h; i++, subpix += win_w + 2 )
             {
                 double py = i - win.height;
-
+                float py_f = (float)py;
+                
+#if CV_SIMD
+                v_float32 v_py = vx_setall_f32(py_f);
+                j = 0;
+                
+                // Process SIMD-width pixels at a time
+                for( ; j <= win_w - simd_width; j += simd_width, k += simd_width )
+                {
+                    // Load gradients
+                    v_float32 v_left = vx_load(subpix + j - 1);
+                    v_float32 v_center = vx_load(subpix + j);
+                    v_float32 v_right = vx_load(subpix + j + 1);
+                    v_float32 v_top = vx_load(subpix + j - win_w - 2);
+                    v_float32 v_bottom = vx_load(subpix + j + win_w + 2);
+                    
+                    // Compute gradients
+                    v_float32 v_tgx = v_sub(v_right, v_left);
+                    v_float32 v_tgy = v_sub(v_bottom, v_top);
+                    
+                    // Load mask values
+                    v_float32 v_mask = vx_load(mask + k);
+                    
+                    // Compute weighted gradient products
+                    v_float32 v_gxx = v_mul(v_mul(v_tgx, v_tgx), v_mask);
+                    v_float32 v_gxy = v_mul(v_mul(v_tgx, v_tgy), v_mask);
+                    v_float32 v_gyy = v_mul(v_mul(v_tgy, v_tgy), v_mask);
+                    
+                    // Accumulate a, b, c
+                    v_a = v_add(v_a, v_gxx);
+                    v_b = v_add(v_b, v_gxy);
+                    v_c = v_add(v_c, v_gyy);
+                    
+                    // Compute px values for this vector
+                    float px_start = (float)(j - win.width);
+                    CV_DECL_ALIGNED(CV_SIMD_WIDTH) float px_vals[CV_SIMD_WIDTH];
+                    for(int idx = 0; idx < simd_width; idx++)
+                        px_vals[idx] = px_start + idx;
+                    v_float32 v_px = vx_load_aligned(px_vals);
+                    
+                    // Accumulate bb1 and bb2
+                    v_bb1 = v_add(v_bb1, v_add(v_mul(v_gxx, v_px), v_mul(v_gxy, v_py)));
+                    v_bb2 = v_add(v_bb2, v_add(v_mul(v_gxy, v_px), v_mul(v_gyy, v_py)));
+                }
+                
+                // Process remaining pixels
+                for( ; j < win_w; j++, k++ )
+#else
                 for( j = 0; j < win_w; j++, k++ )
+#endif
                 {
                     double m = mask[k];
                     double tgx = subpix[j+1] - subpix[j-1];
@@ -131,6 +189,15 @@ void cv::cornerSubPix( InputArray _image, InputOutputArray _corners,
                     bb2 += gxy * px + gyy * py;
                 }
             }
+            
+#if CV_SIMD
+            // Sum up the SIMD accumulators
+            a += v_reduce_sum(v_a);
+            b += v_reduce_sum(v_b);
+            c += v_reduce_sum(v_c);
+            bb1 += v_reduce_sum(v_bb1);
+            bb2 += v_reduce_sum(v_bb2);
+#endif
 
             double det=a*c-b*b;
             if( fabs( det ) <= DBL_EPSILON*DBL_EPSILON )
