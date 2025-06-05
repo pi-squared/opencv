@@ -39,6 +39,7 @@
 //
 //M*/
 #include "precomp.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 namespace cv
 {
@@ -56,6 +57,47 @@ static void fitLine2D_wods( const Point2f* points, int count, float *weights, fl
     // Calculating the average of x and y...
     if( weights == 0 )
     {
+#if CV_SIMD
+        // SIMD optimized path for unweighted case
+        const int vlanes = v_float32::nlanes;
+        v_float32 v_x = vx_setzero<v_float32>();
+        v_float32 v_y = vx_setzero<v_float32>();
+        v_float32 v_x2 = vx_setzero<v_float32>();
+        v_float32 v_y2 = vx_setzero<v_float32>();
+        v_float32 v_xy = vx_setzero<v_float32>();
+        
+        // Process multiple points at once
+        for( i = 0; i <= count - vlanes; i += vlanes )
+        {
+            v_float32 px, py;
+            // Load x and y coordinates
+            v_load_deinterleave(reinterpret_cast<const float*>(&points[i]), px, py);
+            
+            // Accumulate sums
+            v_x = v_add(v_x, px);
+            v_y = v_add(v_y, py);
+            v_x2 = v_fma(px, px, v_x2);
+            v_y2 = v_fma(py, py, v_y2);
+            v_xy = v_fma(px, py, v_xy);
+        }
+        
+        // Reduce SIMD vectors to scalars
+        x = v_reduce_sum(v_x);
+        y = v_reduce_sum(v_y);
+        x2 = v_reduce_sum(v_x2);
+        y2 = v_reduce_sum(v_y2);
+        xy = v_reduce_sum(v_xy);
+        
+        // Process remaining points
+        for( ; i < count; i++ )
+        {
+            x += points[i].x;
+            y += points[i].y;
+            x2 += points[i].x * points[i].x;
+            y2 += points[i].y * points[i].y;
+            xy += points[i].x * points[i].y;
+        }
+#else
         for( i = 0; i < count; i += 1 )
         {
             x += points[i].x;
@@ -64,10 +106,60 @@ static void fitLine2D_wods( const Point2f* points, int count, float *weights, fl
             y2 += points[i].y * points[i].y;
             xy += points[i].x * points[i].y;
         }
+#endif
         w = (float) count;
     }
     else
     {
+#if CV_SIMD
+        // SIMD optimized path for weighted case
+        const int vlanes = v_float32::nlanes;
+        v_float32 v_x = vx_setzero<v_float32>();
+        v_float32 v_y = vx_setzero<v_float32>();
+        v_float32 v_x2 = vx_setzero<v_float32>();
+        v_float32 v_y2 = vx_setzero<v_float32>();
+        v_float32 v_xy = vx_setzero<v_float32>();
+        v_float32 v_w = vx_setzero<v_float32>();
+        
+        // Process multiple points at once
+        for( i = 0; i <= count - vlanes; i += vlanes )
+        {
+            v_float32 px, py;
+            // Load x and y coordinates
+            v_load_deinterleave(reinterpret_cast<const float*>(&points[i]), px, py);
+            v_float32 vw = vx_load(&weights[i]);
+            
+            // Weighted accumulation
+            v_float32 wpx = v_mul(vw, px);
+            v_float32 wpy = v_mul(vw, py);
+            
+            v_x = v_add(v_x, wpx);
+            v_y = v_add(v_y, wpy);
+            v_x2 = v_fma(wpx, px, v_x2);
+            v_y2 = v_fma(wpy, py, v_y2);
+            v_xy = v_fma(wpx, py, v_xy);
+            v_w = v_add(v_w, vw);
+        }
+        
+        // Reduce SIMD vectors to scalars
+        x = v_reduce_sum(v_x);
+        y = v_reduce_sum(v_y);
+        x2 = v_reduce_sum(v_x2);
+        y2 = v_reduce_sum(v_y2);
+        xy = v_reduce_sum(v_xy);
+        w = v_reduce_sum(v_w);
+        
+        // Process remaining points
+        for( ; i < count; i++ )
+        {
+            x += weights[i] * points[i].x;
+            y += weights[i] * points[i].y;
+            x2 += weights[i] * points[i].x * points[i].x;
+            y2 += weights[i] * points[i].y * points[i].y;
+            xy += weights[i] * points[i].x * points[i].y;
+            w += weights[i];
+        }
+#else
         for( i = 0; i < count; i += 1 )
         {
             x += weights[i] * points[i].x;
@@ -77,6 +169,7 @@ static void fitLine2D_wods( const Point2f* points, int count, float *weights, fl
             xy += weights[i] * points[i].x * points[i].y;
             w += weights[i];
         }
+#endif
     }
 
     x /= w;
@@ -114,6 +207,81 @@ static void fitLine3D_wods( const Point3f * points, int count, float *weights, f
 
     if( weights )
     {
+#if CV_SIMD
+        // SIMD optimized path for weighted case
+        const int vlanes = v_float32::nlanes;
+        v_float32 v_x0 = vx_setzero<v_float32>();
+        v_float32 v_y0 = vx_setzero<v_float32>();
+        v_float32 v_z0 = vx_setzero<v_float32>();
+        v_float32 v_x2 = vx_setzero<v_float32>();
+        v_float32 v_y2 = vx_setzero<v_float32>();
+        v_float32 v_z2 = vx_setzero<v_float32>();
+        v_float32 v_xy = vx_setzero<v_float32>();
+        v_float32 v_yz = vx_setzero<v_float32>();
+        v_float32 v_xz = vx_setzero<v_float32>();
+        v_float32 v_w0 = vx_setzero<v_float32>();
+        
+        // Process multiple points at once
+        for( i = 0; i <= count - vlanes; i += vlanes )
+        {
+            v_float32 px, py, pz;
+            // Load x, y, z coordinates
+            v_load_deinterleave(reinterpret_cast<const float*>(&points[i]), px, py, pz);
+            v_float32 vw = vx_load(&weights[i]);
+            
+            // Weighted values
+            v_float32 wpx = v_mul(vw, px);
+            v_float32 wpy = v_mul(vw, py);
+            v_float32 wpz = v_mul(vw, pz);
+            
+            // Accumulate moments
+            v_x0 = v_add(v_x0, wpx);
+            v_y0 = v_add(v_y0, wpy);
+            v_z0 = v_add(v_z0, wpz);
+            
+            v_x2 = v_fma(wpx, px, v_x2);
+            v_y2 = v_fma(wpy, py, v_y2);
+            v_z2 = v_fma(wpz, pz, v_z2);
+            
+            v_xy = v_fma(wpx, py, v_xy);
+            v_yz = v_fma(wpy, pz, v_yz);
+            v_xz = v_fma(wpx, pz, v_xz);
+            
+            v_w0 = v_add(v_w0, vw);
+        }
+        
+        // Reduce SIMD vectors to scalars
+        x0 = v_reduce_sum(v_x0);
+        y0 = v_reduce_sum(v_y0);
+        z0 = v_reduce_sum(v_z0);
+        x2 = v_reduce_sum(v_x2);
+        y2 = v_reduce_sum(v_y2);
+        z2 = v_reduce_sum(v_z2);
+        xy = v_reduce_sum(v_xy);
+        yz = v_reduce_sum(v_yz);
+        xz = v_reduce_sum(v_xz);
+        w0 = v_reduce_sum(v_w0);
+        
+        // Process remaining points
+        for( ; i < count; i++ )
+        {
+            float x = points[i].x;
+            float y = points[i].y;
+            float z = points[i].z;
+            float w = weights[i];
+
+            x2 += x * x * w;
+            xy += x * y * w;
+            xz += x * z * w;
+            y2 += y * y * w;
+            yz += y * z * w;
+            z2 += z * z * w;
+            x0 += x * w;
+            y0 += y * w;
+            z0 += z * w;
+            w0 += w;
+        }
+#else
         for( i = 0; i < count; i++ )
         {
             float x = points[i].x;
@@ -133,9 +301,73 @@ static void fitLine3D_wods( const Point3f * points, int count, float *weights, f
             z0 += z * w;
             w0 += w;
         }
+#endif
     }
     else
     {
+#if CV_SIMD
+        // SIMD optimized path for unweighted case
+        const int vlanes = v_float32::nlanes;
+        v_float32 v_x0 = vx_setzero<v_float32>();
+        v_float32 v_y0 = vx_setzero<v_float32>();
+        v_float32 v_z0 = vx_setzero<v_float32>();
+        v_float32 v_x2 = vx_setzero<v_float32>();
+        v_float32 v_y2 = vx_setzero<v_float32>();
+        v_float32 v_z2 = vx_setzero<v_float32>();
+        v_float32 v_xy = vx_setzero<v_float32>();
+        v_float32 v_yz = vx_setzero<v_float32>();
+        v_float32 v_xz = vx_setzero<v_float32>();
+        
+        // Process multiple points at once
+        for( i = 0; i <= count - vlanes; i += vlanes )
+        {
+            v_float32 px, py, pz;
+            // Load x, y, z coordinates
+            v_load_deinterleave(reinterpret_cast<const float*>(&points[i]), px, py, pz);
+            
+            // Accumulate moments
+            v_x0 = v_add(v_x0, px);
+            v_y0 = v_add(v_y0, py);
+            v_z0 = v_add(v_z0, pz);
+            
+            v_x2 = v_fma(px, px, v_x2);
+            v_y2 = v_fma(py, py, v_y2);
+            v_z2 = v_fma(pz, pz, v_z2);
+            
+            v_xy = v_fma(px, py, v_xy);
+            v_yz = v_fma(py, pz, v_yz);
+            v_xz = v_fma(px, pz, v_xz);
+        }
+        
+        // Reduce SIMD vectors to scalars
+        x0 = v_reduce_sum(v_x0);
+        y0 = v_reduce_sum(v_y0);
+        z0 = v_reduce_sum(v_z0);
+        x2 = v_reduce_sum(v_x2);
+        y2 = v_reduce_sum(v_y2);
+        z2 = v_reduce_sum(v_z2);
+        xy = v_reduce_sum(v_xy);
+        yz = v_reduce_sum(v_yz);
+        xz = v_reduce_sum(v_xz);
+        
+        // Process remaining points
+        for( ; i < count; i++ )
+        {
+            float x = points[i].x;
+            float y = points[i].y;
+            float z = points[i].z;
+
+            x2 += x * x;
+            xy += x * y;
+            xz += x * z;
+            y2 += y * y;
+            yz += y * z;
+            z2 += z * z;
+            x0 += x;
+            y0 += y;
+            z0 += z;
+        }
+#else
         for( i = 0; i < count; i++ )
         {
             float x = points[i].x;
@@ -152,6 +384,7 @@ static void fitLine3D_wods( const Point3f * points, int count, float *weights, f
             y0 += y;
             z0 += z;
         }
+#endif
         w0 = (float) count;
     }
 
@@ -208,6 +441,49 @@ static double calcDist2D( const Point2f* points, int count, float *_line, float 
     float nx = _line[1], ny = -_line[0];
     double sum_dist = 0.;
 
+#if CV_SIMD
+    const int vlanes = v_float32::nlanes;
+    v_float32 v_px = vx_setall<v_float32>(px);
+    v_float32 v_py = vx_setall<v_float32>(py);
+    v_float32 v_nx = vx_setall<v_float32>(nx);
+    v_float32 v_ny = vx_setall<v_float32>(ny);
+    v_float32 v_sum = vx_setzero<v_float32>();
+    
+    // Process multiple points at once
+    for( j = 0; j <= count - vlanes; j += vlanes )
+    {
+        v_float32 vx, vy;
+        // Load x and y coordinates
+        v_load_deinterleave(reinterpret_cast<const float*>(&points[j]), vx, vy);
+        
+        // Calculate distances
+        vx = v_sub(vx, v_px);
+        vy = v_sub(vy, v_py);
+        
+        v_float32 d = v_fma(v_nx, vx, v_mul(v_ny, vy));
+        d = v_abs(d);
+        
+        // Store distances
+        vx_store(&dist[j], d);
+        
+        // Accumulate sum
+        v_sum = v_add(v_sum, d);
+    }
+    
+    sum_dist = v_reduce_sum(v_sum);
+    
+    // Process remaining points
+    for( ; j < count; j++ )
+    {
+        float x, y;
+
+        x = points[j].x - px;
+        y = points[j].y - py;
+
+        dist[j] = (float) fabs( nx * x + ny * y );
+        sum_dist += dist[j];
+    }
+#else
     for( j = 0; j < count; j++ )
     {
         float x, y;
@@ -218,6 +494,7 @@ static double calcDist2D( const Point2f* points, int count, float *_line, float 
         dist[j] = (float) fabs( nx * x + ny * y );
         sum_dist += dist[j];
     }
+#endif
 
     return sum_dist;
 }
@@ -229,6 +506,64 @@ static double calcDist3D( const Point3f* points, int count, float *_line, float 
     float vx = _line[0], vy = _line[1], vz = _line[2];
     double sum_dist = 0.;
 
+#if CV_SIMD
+    const int vlanes = v_float32::nlanes;
+    v_float32 v_px = vx_setall<v_float32>(px);
+    v_float32 v_py = vx_setall<v_float32>(py);
+    v_float32 v_pz = vx_setall<v_float32>(pz);
+    v_float32 v_vx = vx_setall<v_float32>(vx);
+    v_float32 v_vy = vx_setall<v_float32>(vy);
+    v_float32 v_vz = vx_setall<v_float32>(vz);
+    v_float32 v_sum = vx_setzero<v_float32>();
+    
+    // Process multiple points at once
+    for( j = 0; j <= count - vlanes; j += vlanes )
+    {
+        v_float32 x, y, z;
+        // Load x, y, z coordinates
+        v_load_deinterleave(reinterpret_cast<const float*>(&points[j]), x, y, z);
+        
+        // Calculate relative position
+        x = v_sub(x, v_px);
+        y = v_sub(y, v_py);
+        z = v_sub(z, v_pz);
+        
+        // Cross product components
+        v_float32 p1 = v_sub(v_mul(v_vy, z), v_mul(v_vz, y));
+        v_float32 p2 = v_sub(v_mul(v_vz, x), v_mul(v_vx, z));
+        v_float32 p3 = v_sub(v_mul(v_vx, y), v_mul(v_vy, x));
+        
+        // Distance = sqrt(p1^2 + p2^2 + p3^2)
+        v_float32 d2 = v_fma(p1, p1, v_fma(p2, p2, v_mul(p3, p3)));
+        v_float32 d = v_sqrt(d2);
+        
+        // Store distances
+        vx_store(&dist[j], d);
+        
+        // Accumulate sum
+        v_sum = v_add(v_sum, d);
+    }
+    
+    sum_dist = v_reduce_sum(v_sum);
+    
+    // Process remaining points
+    for( ; j < count; j++ )
+    {
+        float x, y, z;
+        double p1, p2, p3;
+
+        x = points[j].x - px;
+        y = points[j].y - py;
+        z = points[j].z - pz;
+
+        p1 = vy * z - vz * y;
+        p2 = vz * x - vx * z;
+        p3 = vx * y - vy * x;
+
+        dist[j] = (float) std::sqrt( p1*p1 + p2*p2 + p3*p3 );
+        sum_dist += dist[j];
+    }
+#else
     for( j = 0; j < count; j++ )
     {
         float x, y, z;
@@ -245,6 +580,7 @@ static double calcDist3D( const Point3f* points, int count, float *_line, float 
         dist[j] = (float) std::sqrt( p1*p1 + p2*p2 + p3*p3 );
         sum_dist += dist[j];
     }
+#endif
 
     return sum_dist;
 }
