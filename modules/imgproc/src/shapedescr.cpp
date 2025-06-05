@@ -280,7 +280,7 @@ double cv::arcLength( InputArray _curve, bool is_closed )
     CV_Assert( count >= 0 && (depth == CV_32F || depth == CV_32S));
     double perimeter = 0;
 
-    int i;
+    int i = 0;
 
     if( count <= 1 )
         return 0.;
@@ -292,7 +292,148 @@ double cv::arcLength( InputArray _curve, bool is_closed )
 
     Point2f prev = is_float ? ptf[last] : Point2f((float)pti[last].x,(float)pti[last].y);
 
-    for( i = 0; i < count; i++ )
+#if CV_SIMD
+    if( is_float && count >= VTraits<v_float32>::vlanes() * 2 )
+    {
+        // SIMD optimization for float points
+        v_float32 v_perimeter = vx_setzero<v_float32>();
+        const int vlanes = VTraits<v_float32>::vlanes();
+        
+        // Process points in groups for better vectorization
+        for( ; i <= count - vlanes; i += vlanes )
+        {
+            // Load current points
+            v_float32 v_x, v_y;
+            v_load_deinterleave(&ptf[i].x, v_x, v_y);
+            
+            // Calculate differences with previous points
+            v_float32 v_dx, v_dy;
+            if( i == 0 )
+            {
+                // Handle first batch specially
+                float CV_DECL_ALIGNED(CV_SIMD_WIDTH) prev_x[VTraits<v_float32>::vlanes()];
+                float CV_DECL_ALIGNED(CV_SIMD_WIDTH) prev_y[VTraits<v_float32>::vlanes()];
+                
+                prev_x[0] = prev.x;
+                prev_y[0] = prev.y;
+                for( int j = 1; j < vlanes; j++ )
+                {
+                    prev_x[j] = ptf[i + j - 1].x;
+                    prev_y[j] = ptf[i + j - 1].y;
+                }
+                
+                v_float32 v_prev_x = vx_load_aligned(prev_x);
+                v_float32 v_prev_y = vx_load_aligned(prev_y);
+                v_dx = v_sub(v_x, v_prev_x);
+                v_dy = v_sub(v_y, v_prev_y);
+            }
+            else
+            {
+                // For subsequent batches, load previous points
+                v_float32 v_prev_x, v_prev_y;
+                v_load_deinterleave(&ptf[i-1].x, v_prev_x, v_prev_y);
+                
+                // Shift to get correct previous points
+                v_float32 v_shifted_x = v_extract<1>(v_prev_x, v_x);
+                v_float32 v_shifted_y = v_extract<1>(v_prev_y, v_y);
+                
+                v_dx = v_sub(v_x, v_shifted_x);
+                v_dy = v_sub(v_y, v_shifted_y);
+            }
+            
+            // Calculate distances: sqrt(dx*dx + dy*dy)
+            v_float32 v_dist_sq = v_fma(v_dx, v_dx, v_mul(v_dy, v_dy));
+            v_float32 v_dist = v_sqrt(v_dist_sq);
+            
+            // Accumulate perimeter
+            v_perimeter = v_add(v_perimeter, v_dist);
+            
+            // Update prev for scalar fallback
+            prev = ptf[i + vlanes - 1];
+        }
+        
+        // Sum up the vector
+        perimeter += v_reduce_sum(v_perimeter);
+    }
+    else if( !is_float && count >= VTraits<v_float32>::vlanes() * 2 )
+    {
+        // SIMD optimization for integer points
+        v_float32 v_perimeter = vx_setzero<v_float32>();
+        const int vlanes = VTraits<v_float32>::vlanes();
+        
+        for( ; i <= count - vlanes; i += vlanes )
+        {
+            // Convert integer points to float
+            float CV_DECL_ALIGNED(CV_SIMD_WIDTH) x_buf[VTraits<v_float32>::vlanes()];
+            float CV_DECL_ALIGNED(CV_SIMD_WIDTH) y_buf[VTraits<v_float32>::vlanes()];
+            
+            for( int j = 0; j < vlanes; j++ )
+            {
+                x_buf[j] = (float)pti[i + j].x;
+                y_buf[j] = (float)pti[i + j].y;
+            }
+            
+            v_float32 v_x = vx_load_aligned(x_buf);
+            v_float32 v_y = vx_load_aligned(y_buf);
+            
+            // Calculate differences
+            v_float32 v_dx, v_dy;
+            if( i == 0 )
+            {
+                // Handle first batch specially
+                float CV_DECL_ALIGNED(CV_SIMD_WIDTH) prev_x[VTraits<v_float32>::vlanes()];
+                float CV_DECL_ALIGNED(CV_SIMD_WIDTH) prev_y[VTraits<v_float32>::vlanes()];
+                
+                prev_x[0] = prev.x;
+                prev_y[0] = prev.y;
+                for( int j = 1; j < vlanes; j++ )
+                {
+                    prev_x[j] = (float)pti[i + j - 1].x;
+                    prev_y[j] = (float)pti[i + j - 1].y;
+                }
+                
+                v_float32 v_prev_x = vx_load_aligned(prev_x);
+                v_float32 v_prev_y = vx_load_aligned(prev_y);
+                v_dx = v_sub(v_x, v_prev_x);
+                v_dy = v_sub(v_y, v_prev_y);
+            }
+            else
+            {
+                // For subsequent batches
+                float CV_DECL_ALIGNED(CV_SIMD_WIDTH) prev_x[VTraits<v_float32>::vlanes()];
+                float CV_DECL_ALIGNED(CV_SIMD_WIDTH) prev_y[VTraits<v_float32>::vlanes()];
+                
+                for( int j = 0; j < vlanes; j++ )
+                {
+                    int idx = (j == 0) ? i - 1 : i + j - 1;
+                    prev_x[j] = (float)pti[idx].x;
+                    prev_y[j] = (float)pti[idx].y;
+                }
+                
+                v_float32 v_prev_x = vx_load_aligned(prev_x);
+                v_float32 v_prev_y = vx_load_aligned(prev_y);
+                v_dx = v_sub(v_x, v_prev_x);
+                v_dy = v_sub(v_y, v_prev_y);
+            }
+            
+            // Calculate distances
+            v_float32 v_dist_sq = v_fma(v_dx, v_dx, v_mul(v_dy, v_dy));
+            v_float32 v_dist = v_sqrt(v_dist_sq);
+            
+            // Accumulate perimeter
+            v_perimeter = v_add(v_perimeter, v_dist);
+            
+            // Update prev for scalar fallback
+            prev = Point2f((float)pti[i + vlanes - 1].x, (float)pti[i + vlanes - 1].y);
+        }
+        
+        // Sum up the vector
+        perimeter += v_reduce_sum(v_perimeter);
+    }
+#endif
+
+    // Scalar fallback for remaining points
+    for( ; i < count; i++ )
     {
         Point2f p = is_float ? ptf[i] : Point2f((float)pti[i].x,(float)pti[i].y);
         float dx = p.x - prev.x, dy = p.y - prev.y;
