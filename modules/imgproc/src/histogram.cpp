@@ -548,25 +548,121 @@ calcHist_8u( std::vector<uchar*>& _ptrs, const std::vector<int>& _deltas,
             {
                 if( d0 == 1 )
                 {
-                    for( x = 0; x <= imsize.width - 4; x += 4 )
+#if CV_SIMD
+                    // SIMD optimization for continuous data
+                    // Process multiple pixels at once, but histogram updates must be sequential
+                    x = 0;
+                    const int vlen = VTraits<v_uint8>::vlanes();
+                    
+                    // Main SIMD loop - process blocks of pixels
+                    for( ; x <= imsize.width - vlen * 4; x += vlen * 4 )
+                    {
+                        v_uint8 pixels0 = vx_load(p0 + x);
+                        v_uint8 pixels1 = vx_load(p0 + x + vlen);
+                        v_uint8 pixels2 = vx_load(p0 + x + vlen * 2);
+                        v_uint8 pixels3 = vx_load(p0 + x + vlen * 3);
+                        
+                        // Extract to temporary buffer for efficient histogram update
+                        // Using aligned buffer for better performance
+                        CV_DECL_ALIGNED(CV_SIMD_WIDTH) uchar temp[VTraits<v_uint8>::max_nlanes * 4];
+                        v_store(temp, pixels0);
+                        v_store(temp + vlen, pixels1);
+                        v_store(temp + vlen * 2, pixels2);
+                        v_store(temp + vlen * 3, pixels3);
+                        
+                        // Update histogram from temporary buffer
+                        for( int i = 0; i < vlen * 4; i++ )
+                            matH[temp[i]]++;
+                    }
+                    
+                    // Process remaining pixels with smaller SIMD loads
+                    for( ; x <= imsize.width - vlen; x += vlen )
+                    {
+                        v_uint8 pixels = vx_load(p0 + x);
+                        CV_DECL_ALIGNED(CV_SIMD_WIDTH) uchar temp[VTraits<v_uint8>::max_nlanes];
+                        v_store(temp, pixels);
+                        
+                        for( int i = 0; i < vlen; i++ )
+                            matH[temp[i]]++;
+                    }
+#else
+                    x = 0;
+                    for( ; x <= imsize.width - 4; x += 4 )
                     {
                         int t0 = p0[x], t1 = p0[x+1];
                         matH[t0]++; matH[t1]++;
                         t0 = p0[x+2]; t1 = p0[x+3];
                         matH[t0]++; matH[t1]++;
                     }
+#endif
                     p0 += x;
                 }
                 else
-                    for( x = 0; x <= imsize.width - 4; x += 4 )
+                {
+#if CV_SIMD
+                    // SIMD optimization for strided data
+                    if( d0 == 2 )
                     {
-                        int t0 = p0[0], t1 = p0[d0];
-                        matH[t0]++; matH[t1]++;
-                        p0 += d0*2;
-                        t0 = p0[0]; t1 = p0[d0];
-                        matH[t0]++; matH[t1]++;
-                        p0 += d0*2;
+                        for( x = 0; x <= imsize.width - 8; x += 8 )
+                        {
+                            // Load interleaved data and deinterleave
+                            v_uint8 v0, v1;
+                            v_load_deinterleave(p0, v0, v1);
+                            // Process first channel pixels
+                            for( int i = 0; i < VTraits<v_uint8>::vlanes()/2; i++ )
+                            {
+                                matH[v_get0(v_rotate_right<0>(v0))]++;
+                                v0 = v_rotate_left<1>(v0);
+                            }
+                            p0 += VTraits<v_uint8>::vlanes();
+                        }
                     }
+                    else if( d0 == 3 )
+                    {
+                        for( x = 0; x <= imsize.width - 12; x += 12 )
+                        {
+                            // Load interleaved data and deinterleave
+                            v_uint8 v0, v1, v2;
+                            v_load_deinterleave(p0, v0, v1, v2);
+                            // Process first channel pixels
+                            for( int i = 0; i < VTraits<v_uint8>::vlanes()/3; i++ )
+                            {
+                                matH[v_get0(v_rotate_right<0>(v0))]++;
+                                v0 = v_rotate_left<1>(v0);
+                            }
+                            p0 += VTraits<v_uint8>::vlanes();
+                        }
+                    }
+                    else if( d0 == 4 )
+                    {
+                        for( x = 0; x <= imsize.width - 16; x += 16 )
+                        {
+                            // Load interleaved data and deinterleave
+                            v_uint8 v0, v1, v2, v3;
+                            v_load_deinterleave(p0, v0, v1, v2, v3);
+                            // Process first channel pixels
+                            for( int i = 0; i < VTraits<v_uint8>::vlanes()/4; i++ )
+                            {
+                                matH[v_get0(v_rotate_right<0>(v0))]++;
+                                v0 = v_rotate_left<1>(v0);
+                            }
+                            p0 += VTraits<v_uint8>::vlanes();
+                        }
+                    }
+                    else
+#endif
+                    {
+                        for( x = 0; x <= imsize.width - 4; x += 4 )
+                        {
+                            int t0 = p0[0], t1 = p0[d0];
+                            matH[t0]++; matH[t1]++;
+                            p0 += d0*2;
+                            t0 = p0[0]; t1 = p0[d0];
+                            matH[t0]++; matH[t1]++;
+                            p0 += d0*2;
+                        }
+                    }
+                }
 
                 for( ; x < imsize.width; x++, p0 += d0 )
                     matH[*p0]++;
