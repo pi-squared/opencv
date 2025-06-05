@@ -321,13 +321,130 @@ double cv::contourArea( InputArray _contour, bool oriented )
     bool is_float = depth == CV_32F;
     const Point* ptsi = contour.ptr<Point>();
     const Point2f* ptsf = contour.ptr<Point2f>();
-    Point2f prev = is_float ? ptsf[npoints-1] : Point2f((float)ptsi[npoints-1].x, (float)ptsi[npoints-1].y);
-
-    for( int i = 0; i < npoints; i++ )
+    
+#if CV_SIMD
+    // Use SIMD for larger contours
+    const int vlanes = VTraits<v_float32>::vlanes();
+    const int vlanes64 = VTraits<v_float64>::vlanes();
+    
+    if( npoints >= vlanes * 2 )
     {
-        Point2f p = is_float ? ptsf[i] : Point2f((float)ptsi[i].x, (float)ptsi[i].y);
-        a00 += (double)prev.x * p.y - (double)prev.y * p.x;
-        prev = p;
+        int i = 0;
+        
+        if( is_float )
+        {
+            // Use double precision accumulators for numerical stability
+            v_float64 accum1 = vx_setzero<v_float64>();
+            v_float64 accum2 = vx_setzero<v_float64>();
+            v_float64 accum3 = vx_setzero<v_float64>();
+            v_float64 accum4 = vx_setzero<v_float64>();
+            
+            // Process the main loop
+            for( ; i < npoints - 1; i++ )
+            {
+                // For SIMD, we'll process multiple pairs at once
+                // We'll use a different approach: compute xi*yi+1 - xi+1*yi
+                int simd_end = std::min(i + vlanes, npoints - 1);
+                if( simd_end - i >= vlanes )
+                {
+                    v_float32 x_curr, y_curr, x_next, y_next;
+                    v_load_deinterleave(&ptsf[i].x, x_curr, y_curr);
+                    v_load_deinterleave(&ptsf[i+1].x, x_next, y_next);
+                    
+                    // Compute cross products: x_curr * y_next - x_next * y_curr
+                    v_float32 cross = v_fma(x_curr, y_next, -x_next * y_curr);
+                    
+                    // Convert to double and accumulate
+                    v_float64 cross_low = v_cvt_f64(v_extract_low(cross));
+                    v_float64 cross_high = v_cvt_f64(v_extract_high(cross));
+                    
+                    accum1 = v_add(accum1, cross_low);
+                    accum2 = v_add(accum2, cross_high);
+                    
+                    i += vlanes - 1;  // -1 because the loop will increment
+                }
+                else
+                {
+                    // Scalar fallback for this iteration
+                    a00 += (double)ptsf[i].x * ptsf[i+1].y - (double)ptsf[i+1].x * ptsf[i].y;
+                }
+            }
+            
+            // Handle wrap-around (last point to first point)
+            a00 += (double)ptsf[npoints-1].x * ptsf[0].y - (double)ptsf[0].x * ptsf[npoints-1].y;
+            
+            // Sum all accumulators
+            a00 += v_reduce_sum(accum1) + v_reduce_sum(accum2) + 
+                   v_reduce_sum(accum3) + v_reduce_sum(accum4);
+        }
+        else  // Integer points
+        {
+            // Use double precision accumulators
+            v_float64 accum1 = vx_setzero<v_float64>();
+            v_float64 accum2 = vx_setzero<v_float64>();
+            
+            // Process the main loop
+            for( ; i < npoints - 1; )
+            {
+                int batch_size = std::min(vlanes, npoints - 1 - i);
+                if( batch_size >= vlanes )
+                {
+                    // Convert integer coordinates to float
+                    alignas(32) float x_curr[vlanes], y_curr[vlanes];
+                    alignas(32) float x_next[vlanes], y_next[vlanes];
+                    
+                    for( int j = 0; j < vlanes; j++ )
+                    {
+                        x_curr[j] = (float)ptsi[i + j].x;
+                        y_curr[j] = (float)ptsi[i + j].y;
+                        x_next[j] = (float)ptsi[i + j + 1].x;
+                        y_next[j] = (float)ptsi[i + j + 1].y;
+                    }
+                    
+                    v_float32 x_curr_vec = vx_load_aligned(x_curr);
+                    v_float32 y_curr_vec = vx_load_aligned(y_curr);
+                    v_float32 x_next_vec = vx_load_aligned(x_next);
+                    v_float32 y_next_vec = vx_load_aligned(y_next);
+                    
+                    // Compute cross products
+                    v_float32 cross = v_fma(x_curr_vec, y_next_vec, -x_next_vec * y_curr_vec);
+                    
+                    // Convert to double and accumulate
+                    v_float64 cross_low = v_cvt_f64(v_extract_low(cross));
+                    v_float64 cross_high = v_cvt_f64(v_extract_high(cross));
+                    
+                    accum1 = v_add(accum1, cross_low);
+                    accum2 = v_add(accum2, cross_high);
+                    
+                    i += vlanes;
+                }
+                else
+                {
+                    // Scalar fallback
+                    a00 += (double)ptsi[i].x * ptsi[i+1].y - (double)ptsi[i+1].x * ptsi[i].y;
+                    i++;
+                }
+            }
+            
+            // Handle wrap-around
+            a00 += (double)ptsi[npoints-1].x * ptsi[0].y - (double)ptsi[0].x * ptsi[npoints-1].y;
+            
+            // Sum accumulators
+            a00 += v_reduce_sum(accum1) + v_reduce_sum(accum2);
+        }
+    }
+    else
+#endif
+    {
+        // Scalar implementation
+        Point2f prev = is_float ? ptsf[npoints-1] : Point2f((float)ptsi[npoints-1].x, (float)ptsi[npoints-1].y);
+        
+        for( int i = 0; i < npoints; i++ )
+        {
+            Point2f p = is_float ? ptsf[i] : Point2f((float)ptsi[i].x, (float)ptsi[i].y);
+            a00 += (double)prev.x * p.y - (double)prev.y * p.x;
+            prev = p;
+        }
     }
 
     a00 *= 0.5;
