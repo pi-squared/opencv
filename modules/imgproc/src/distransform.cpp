@@ -40,6 +40,7 @@
 //
 //M*/
 #include "precomp.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 namespace cv
 {
@@ -89,12 +90,47 @@ distanceTransform_3x3( const Mat& _src, Mat& _temp, Mat& _dist, const float* met
     // forward pass
     unsigned int* tmp = (unsigned int*)(temp + BORDER*step) + BORDER;
     const uchar* s = src;
+    
+#if CV_SIMD
+    v_uint32 v_hv_dist = vx_setall<v_uint32>(HV_DIST);
+    v_uint32 v_diag_dist = vx_setall<v_uint32>(DIAG_DIST);
+    v_uint32 v_dist_max = vx_setall<v_uint32>(DIST_MAX);
+#endif
+    
     for( i = 0; i < size.height; i++ )
     {
         for( j = 0; j < BORDER; j++ )
             tmp[-j-1] = tmp[size.width + j] = DIST_MAX;
 
-        for( j = 0; j < size.width; j++ )
+        j = 0;
+        
+#if CV_SIMD
+        // Process pixels with SIMD where we can parallelize min operations
+        // We still need sequential processing for left neighbor dependency
+        for( ; j <= size.width - VTraits<v_uint32>::vlanes(); j += VTraits<v_uint32>::vlanes() )
+        {
+            // First handle the sequential dependency
+            for( int k = 0; k < VTraits<v_uint32>::vlanes(); k++ )
+            {
+                if( !s[j + k] )
+                    tmp[j + k] = 0;
+                else
+                {
+                    unsigned int t0 = tmp[j + k - step - 1] + DIAG_DIST;
+                    unsigned int t = tmp[j + k - step] + HV_DIST;
+                    if( t0 > t ) t0 = t;
+                    t = tmp[j + k - step + 1] + DIAG_DIST;
+                    if( t0 > t ) t0 = t;
+                    t = tmp[j + k - 1] + HV_DIST;
+                    if( t0 > t ) t0 = t;
+                    tmp[j + k] = (t0 > DIST_MAX) ? DIST_MAX : t0;
+                }
+            }
+        }
+#endif
+        
+        // Process remaining pixels
+        for( ; j < size.width; j++ )
         {
             if( !s[j] )
                 tmp[j] = 0;
@@ -116,11 +152,59 @@ distanceTransform_3x3( const Mat& _src, Mat& _temp, Mat& _dist, const float* met
 
     // backward pass
     float* d = (float*)dist;
+    
+#if CV_SIMD
+    v_float32 v_scale = vx_setall<v_float32>(scale);
+#endif
+    
     for( i = size.height - 1; i >= 0; i-- )
     {
         tmp -= step;
 
-        for( j = size.width - 1; j >= 0; j-- )
+        j = size.width - 1;
+        
+#if CV_SIMD
+        // Process pixels in chunks from right to left
+        for( ; j >= VTraits<v_uint32>::vlanes() - 1; j -= VTraits<v_uint32>::vlanes() )
+        {
+            // Load current values
+            v_uint32 vt0 = vx_load(tmp + j - VTraits<v_uint32>::vlanes() + 1);
+            
+            // Load bottom neighbors
+            v_uint32 vbl = vx_load(tmp + j - VTraits<v_uint32>::vlanes() + 1 + step - 1) + v_diag_dist;
+            v_uint32 vb = vx_load(tmp + j - VTraits<v_uint32>::vlanes() + 1 + step) + v_hv_dist;
+            v_uint32 vbr = vx_load(tmp + j - VTraits<v_uint32>::vlanes() + 1 + step + 1) + v_diag_dist;
+            
+            // Compute minimum of bottom neighbors
+            v_uint32 vmin = v_min(v_min(vbl, vb), vbr);
+            vt0 = v_select(vt0 > v_hv_dist, v_min(vt0, vmin), vt0);
+            
+            // Store back and handle right neighbor dependency
+            v_store(tmp + j - VTraits<v_uint32>::vlanes() + 1, vt0);
+            
+            // Convert to float and store
+            v_float32 vf0 = v_cvt_f32(v_reinterpret_as_s32(vt0)) * v_scale;
+            v_store(d + j - VTraits<v_uint32>::vlanes() + 1, vf0);
+            
+            // Handle right neighbor dependency sequentially
+            for( int k = VTraits<v_uint32>::vlanes() - 1; k >= 0; k-- )
+            {
+                int idx = j - VTraits<v_uint32>::vlanes() + 1 + k;
+                if( idx < size.width - 1 && tmp[idx] > HV_DIST )
+                {
+                    unsigned int t = tmp[idx + 1] + HV_DIST;
+                    if( tmp[idx] > t )
+                    {
+                        tmp[idx] = t;
+                        d[idx] = (float)(t * scale);
+                    }
+                }
+            }
+        }
+#endif
+        
+        // Process remaining pixels
+        for( ; j >= 0; j-- )
         {
             unsigned int t0 = tmp[j];
             if( t0 > HV_DIST )
@@ -166,11 +250,20 @@ distanceTransform_5x5( const Mat& _src, Mat& _temp, Mat& _dist, const float* met
     // forward pass
     unsigned int* tmp = (unsigned int*)(temp + BORDER*step) + BORDER;
     const uchar* s = src;
+    
+#if CV_SIMD
+    v_uint32 v_hv_dist = vx_setall<v_uint32>(HV_DIST);
+    v_uint32 v_diag_dist = vx_setall<v_uint32>(DIAG_DIST);
+    v_uint32 v_long_dist = vx_setall<v_uint32>(LONG_DIST);
+    v_uint32 v_dist_max = vx_setall<v_uint32>(DIST_MAX);
+#endif
+    
     for( i = 0; i < size.height; i++ )
     {
         for( j = 0; j < BORDER; j++ )
             tmp[-j-1] = tmp[size.width + j] = DIST_MAX;
 
+        // Process all pixels scalar due to sequential dependency on left neighbor
         for( j = 0; j < size.width; j++ )
         {
             if( !s[j] )
@@ -201,11 +294,71 @@ distanceTransform_5x5( const Mat& _src, Mat& _temp, Mat& _dist, const float* met
 
     // backward pass
     float* d = (float*)dist;
+    
+#if CV_SIMD
+    v_float32 v_scale = vx_setall<v_float32>(scale);
+#endif
+    
     for( i = size.height - 1; i >= 0; i-- )
     {
         tmp -= step;
 
-        for( j = size.width - 1; j >= 0; j-- )
+        j = size.width - 1;
+        
+#if CV_SIMD
+        // Process pixels in chunks from right to left
+        for( ; j >= VTraits<v_uint32>::vlanes() - 1; j -= VTraits<v_uint32>::vlanes() )
+        {
+            // Load current values
+            v_uint32 vt0 = vx_load(tmp + j - VTraits<v_uint32>::vlanes() + 1);
+            
+            // Check which values need updating
+            v_uint32 vmask = vt0 > v_hv_dist;
+            
+            if( v_check_any(vmask) )
+            {
+                // Load all bottom neighbors
+                v_uint32 vb1 = vx_load(tmp + j - VTraits<v_uint32>::vlanes() + 1 + step*2 + 1) + v_long_dist;
+                v_uint32 vb2 = vx_load(tmp + j - VTraits<v_uint32>::vlanes() + 1 + step*2 - 1) + v_long_dist;
+                v_uint32 vb3 = vx_load(tmp + j - VTraits<v_uint32>::vlanes() + 1 + step + 2) + v_long_dist;
+                v_uint32 vb4 = vx_load(tmp + j - VTraits<v_uint32>::vlanes() + 1 + step + 1) + v_diag_dist;
+                v_uint32 vb5 = vx_load(tmp + j - VTraits<v_uint32>::vlanes() + 1 + step) + v_hv_dist;
+                v_uint32 vb6 = vx_load(tmp + j - VTraits<v_uint32>::vlanes() + 1 + step - 1) + v_diag_dist;
+                v_uint32 vb7 = vx_load(tmp + j - VTraits<v_uint32>::vlanes() + 1 + step - 2) + v_long_dist;
+                
+                // Compute minimum of all neighbors
+                v_uint32 vmin1 = v_min(v_min(vb1, vb2), v_min(vb3, vb4));
+                v_uint32 vmin2 = v_min(v_min(vb5, vb6), vb7);
+                v_uint32 vmin = v_min(vmin1, vmin2);
+                vt0 = v_select(vmask, v_min(vt0, vmin), vt0);
+                
+                // Store back
+                v_store(tmp + j - VTraits<v_uint32>::vlanes() + 1, vt0);
+            }
+            
+            // Convert to float and store
+            v_float32 vf0 = v_cvt_f32(v_reinterpret_as_s32(vt0)) * v_scale;
+            v_store(d + j - VTraits<v_uint32>::vlanes() + 1, vf0);
+            
+            // Handle right neighbor dependency sequentially
+            for( int k = VTraits<v_uint32>::vlanes() - 1; k >= 0; k-- )
+            {
+                int idx = j - VTraits<v_uint32>::vlanes() + 1 + k;
+                if( idx < size.width - 1 && tmp[idx] > HV_DIST )
+                {
+                    unsigned int t = tmp[idx + 1] + HV_DIST;
+                    if( tmp[idx] > t )
+                    {
+                        tmp[idx] = t;
+                        d[idx] = (float)(t * scale);
+                    }
+                }
+            }
+        }
+#endif
+        
+        // Process remaining pixels
+        for( ; j >= 0; j-- )
         {
             unsigned int t0 = tmp[j];
             if( t0 > HV_DIST )
