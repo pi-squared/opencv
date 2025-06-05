@@ -251,9 +251,23 @@ static double calcDist3D( const Point3f* points, int count, float *_line, float 
 
 static void weightL1( float *d, int count, float *w )
 {
-    int i;
+    int i = 0;
 
-    for( i = 0; i < count; i++ )
+#if CV_SIMD
+    const v_float32 v_eps = vx_setall_f32((float)eps);
+    const v_float32 v_one = vx_setall_f32(1.0f);
+    
+    for( ; i <= count - v_float32::nlanes; i += v_float32::nlanes )
+    {
+        v_float32 v_d = vx_load(d + i);
+        v_float32 v_abs_d = v_abs(v_d);
+        v_float32 v_max_val = v_max(v_abs_d, v_eps);
+        v_float32 v_w = v_div(v_one, v_max_val);
+        v_store(w + i, v_w);
+    }
+#endif
+
+    for( ; i < count; i++ )
     {
         double t = fabs( (double) d[i] );
         w[i] = (float)(1. / MAX(t, eps));
@@ -262,9 +276,23 @@ static void weightL1( float *d, int count, float *w )
 
 static void weightL12( float *d, int count, float *w )
 {
-    int i;
+    int i = 0;
 
-    for( i = 0; i < count; i++ )
+#if CV_SIMD
+    const v_float32 v_one = vx_setall_f32(1.0f);
+    const v_float32 v_half = vx_setall_f32(0.5f);
+    
+    for( ; i <= count - v_float32::nlanes; i += v_float32::nlanes )
+    {
+        v_float32 v_d = vx_load(d + i);
+        v_float32 v_d_sq = v_mul(v_d, v_d);
+        v_float32 v_term = v_muladd(v_d_sq, v_half, v_one);
+        v_float32 v_w = v_invsqrt(v_term);
+        v_store(w + i, v_w);
+    }
+#endif
+
+    for( ; i < count; i++ )
     {
         w[i] = 1.0f / (float) std::sqrt( 1 + (double) (d[i] * d[i] * 0.5) );
     }
@@ -273,36 +301,79 @@ static void weightL12( float *d, int count, float *w )
 
 static void weightHuber( float *d, int count, float *w, float _c )
 {
-    int i;
+    int i = 0;
     const float c = _c <= 0 ? 1.345f : _c;
 
-    for( i = 0; i < count; i++ )
+#if CV_SIMD
+    const v_float32 v_c = vx_setall_f32(c);
+    const v_float32 v_one = vx_setall_f32(1.0f);
+    
+    for( ; i <= count - v_float32::nlanes; i += v_float32::nlanes )
     {
-        if( d[i] < c )
+        v_float32 v_d = vx_load(d + i);
+        v_float32 v_abs_d = v_abs(v_d);
+        v_float32 v_mask = v_lt(v_abs_d, v_c);
+        v_float32 v_w_else = v_div(v_c, v_abs_d);
+        v_float32 v_w = v_select(v_mask, v_one, v_w_else);
+        v_store(w + i, v_w);
+    }
+#endif
+
+    for( ; i < count; i++ )
+    {
+        float abs_d = fabs(d[i]);
+        if( abs_d < c )
             w[i] = 1.0f;
         else
-            w[i] = c/d[i];
+            w[i] = c/abs_d;
     }
 }
 
 
 static void weightFair( float *d, int count, float *w, float _c )
 {
-    int i;
+    int i = 0;
     const float c = _c == 0 ? 1 / 1.3998f : 1 / _c;
 
-    for( i = 0; i < count; i++ )
+#if CV_SIMD
+    const v_float32 v_c = vx_setall_f32(c);
+    const v_float32 v_one = vx_setall_f32(1.0f);
+    
+    for( ; i <= count - v_float32::nlanes; i += v_float32::nlanes )
     {
-        w[i] = 1 / (1 + d[i] * c);
+        v_float32 v_d = vx_load(d + i);
+        v_float32 v_abs_d = v_abs(v_d);
+        v_float32 v_term = v_muladd(v_abs_d, v_c, v_one);
+        v_float32 v_w = v_div(v_one, v_term);
+        v_store(w + i, v_w);
+    }
+#endif
+
+    for( ; i < count; i++ )
+    {
+        w[i] = 1 / (1 + fabs(d[i]) * c);
     }
 }
 
 static void weightWelsch( float *d, int count, float *w, float _c )
 {
-    int i;
+    int i = 0;
     const float c = _c == 0 ? 1 / 2.9846f : 1 / _c;
 
-    for( i = 0; i < count; i++ )
+#if CV_SIMD
+    const v_float32 v_neg_c_sq = vx_setall_f32(-c * c);
+    
+    for( ; i <= count - v_float32::nlanes; i += v_float32::nlanes )
+    {
+        v_float32 v_d = vx_load(d + i);
+        v_float32 v_d_sq = v_mul(v_d, v_d);
+        v_float32 v_arg = v_mul(v_d_sq, v_neg_c_sq);
+        v_float32 v_w = v_exp(v_arg);
+        v_store(w + i, v_w);
+    }
+#endif
+
+    for( ; i < count; i++ )
     {
         w[i] = (float) std::exp( -d[i] * d[i] * c * c );
     }
