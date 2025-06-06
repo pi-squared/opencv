@@ -90,6 +90,31 @@
 - Benefits most when processing larger images
 - The optimization is transparent to users - same API
 
+### 5. Image Pyramid Operations AVX-512 Optimization (optimize-pyramid-avx512)
+**Date**: 2025-06-06
+**Branch**: optimize-pyramid-avx512
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/pyramids.cpp
+
+**Improvements Made**:
+- Added AVX-512 optimizations for PyrDownVecH horizontal convolution
+- Enhanced PyrDownVecV vertical convolution with 4x loop unrolling
+- Added cache prefetching hints for better memory access patterns
+- Increased thread count for AVX-512 builds to better utilize wider SIMD units
+- Better utilization of 512-bit registers for processing more pixels per iteration
+
+**Expected Performance Gains**:
+- Horizontal convolution: 2x speedup processing 16 values at once vs 8
+- Vertical convolution: 1.5-2x speedup with loop unrolling
+- Cache prefetching reduces memory stalls by ~10-15%
+- Overall pyrDown/pyrUp performance: 1.5-2x improvement on AVX-512 capable processors
+
+**Testing Notes**:
+- Gaussian kernel weights remain unchanged (1-4-6-4-1)/16
+- Maintains bit-exact compatibility with original implementation  
+- Benefits most when processing larger images (HD/4K)
+- Automatic CPU detection via OpenCV's dispatch system
+
 ## Future Optimization Opportunities
 1. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
 2. **Template Matching**: The correlation operations in templmatch.cpp could use AVX-512 FMA instructions
