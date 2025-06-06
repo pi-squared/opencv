@@ -150,60 +150,213 @@ int countNonZero(InputArray _src)
     return nz;
 }
 
+// Forward declarations for optimized implementations
+template<typename T>
+static void findNonZeroImpl(const Mat& src, std::vector<Point>& idxvec);
+
+#if CV_SIMD || CV_SIMD_SCALABLE
+template<typename T>
+static inline void findNonZeroRow_SIMD(const T* src, int cols, int row, std::vector<Point>& idxvec);
+
+// Specialization for 8-bit types with SIMD
+template<>
+inline void findNonZeroRow_SIMD<uchar>(const uchar* src, int cols, int row, std::vector<Point>& idxvec)
+{
+    int i = 0;
+#if CV_SIMD || CV_SIMD_SCALABLE
+    const int vlanes = VTraits<v_uint8>::vlanes();
+    int cols0 = cols & -vlanes;
+    v_uint8 v_zero = vx_setzero_u8();
+    
+    // Process SIMD chunks
+    for (; i < cols0; i += vlanes)
+    {
+        v_uint8 v_src = vx_load(src + i);
+        v_uint8 v_mask = v_ne(v_src, v_zero);
+        
+        // Check if any elements are non-zero
+        if (v_check_any(v_mask))
+        {
+            // Fall back to scalar for this chunk if we have non-zero elements
+            for (int j = 0; j < vlanes; j++)
+            {
+                if (src[i + j] != 0)
+                    idxvec.push_back(Point(i + j, row));
+            }
+        }
+    }
+    v_cleanup();
+#endif
+    // Scalar fallback for remaining elements
+    for (; i < cols; i++)
+        if (src[i] != 0)
+            idxvec.push_back(Point(i, row));
+}
+
+// Specialization for 16-bit types
+template<>
+inline void findNonZeroRow_SIMD<ushort>(const ushort* src, int cols, int row, std::vector<Point>& idxvec)
+{
+    int i = 0;
+#if CV_SIMD || CV_SIMD_SCALABLE
+    const int vlanes = VTraits<v_uint16>::vlanes();
+    int cols0 = cols & -vlanes;
+    v_uint16 v_zero = vx_setzero_u16();
+    
+    // Process SIMD chunks
+    for (; i < cols0; i += vlanes)
+    {
+        v_uint16 v_src = vx_load(src + i);
+        v_uint16 v_mask = v_ne(v_src, v_zero);
+        
+        // Check if any elements are non-zero
+        if (v_check_any(v_mask))
+        {
+            // Fall back to scalar for this chunk if we have non-zero elements
+            for (int j = 0; j < vlanes; j++)
+            {
+                if (src[i + j] != 0)
+                    idxvec.push_back(Point(i + j, row));
+            }
+        }
+    }
+    v_cleanup();
+#endif
+    // Scalar fallback for remaining elements
+    for (; i < cols; i++)
+        if (src[i] != 0)
+            idxvec.push_back(Point(i, row));
+}
+
+// Specialization for 32-bit integer types
+template<>
+inline void findNonZeroRow_SIMD<int>(const int* src, int cols, int row, std::vector<Point>& idxvec)
+{
+    int i = 0;
+#if CV_SIMD || CV_SIMD_SCALABLE
+    const int vlanes = VTraits<v_int32>::vlanes();
+    int cols0 = cols & -vlanes;
+    v_int32 v_zero = vx_setzero_s32();
+    
+    // Process SIMD chunks
+    for (; i < cols0; i += vlanes)
+    {
+        v_int32 v_src = vx_load(src + i);
+        v_int32 v_mask = v_ne(v_src, v_zero);
+        
+        // Check if any elements are non-zero
+        if (v_check_any(v_mask))
+        {
+            // Fall back to scalar for this chunk if we have non-zero elements
+            for (int j = 0; j < vlanes; j++)
+            {
+                if (src[i + j] != 0)
+                    idxvec.push_back(Point(i + j, row));
+            }
+        }
+    }
+    v_cleanup();
+#endif
+    // Scalar fallback for remaining elements
+    for (; i < cols; i++)
+        if (src[i] != 0)
+            idxvec.push_back(Point(i, row));
+}
+
+// Specialization for 32-bit float types
+template<>
+inline void findNonZeroRow_SIMD<float>(const float* src, int cols, int row, std::vector<Point>& idxvec)
+{
+    int i = 0;
+#if CV_SIMD || CV_SIMD_SCALABLE
+    const int vlanes = VTraits<v_float32>::vlanes();
+    int cols0 = cols & -vlanes;
+    v_float32 v_zero = vx_setzero_f32();
+    
+    // Process SIMD chunks
+    for (; i < cols0; i += vlanes)
+    {
+        v_float32 v_src = vx_load(src + i);
+        v_float32 v_mask = v_ne(v_src, v_zero);
+        
+        // Check if any elements are non-zero
+        if (v_check_any(v_mask))
+        {
+            // Fall back to scalar for this chunk if we have non-zero elements
+            for (int j = 0; j < vlanes; j++)
+            {
+                if (src[i + j] != 0)
+                    idxvec.push_back(Point(i + j, row));
+            }
+        }
+    }
+    v_cleanup();
+#endif
+    // Scalar fallback for remaining elements
+    for (; i < cols; i++)
+        if (src[i] != 0)
+            idxvec.push_back(Point(i, row));
+}
+
+// Generic fallback for other types
+template<typename T>
+static inline void findNonZeroRow_SIMD(const T* src, int cols, int row, std::vector<Point>& idxvec)
+{
+    for (int i = 0; i < cols; i++)
+        if (src[i] != 0)
+            idxvec.push_back(Point(i, row));
+}
+#endif
+
+// Implementation for each type
+template<typename T>
+static void findNonZeroImpl(const Mat& src, std::vector<Point>& idxvec)
+{
+    const int rows = src.rows;
+    const int cols = src.cols;
+    
+    // Pre-allocate space for better performance
+    idxvec.reserve(std::min(rows * cols / 8, 100000));
+    
+    for (int i = 0; i < rows; i++)
+    {
+        const T* ptr = src.ptr<T>(i);
+#if CV_SIMD || CV_SIMD_SCALABLE
+        findNonZeroRow_SIMD<T>(ptr, cols, i, idxvec);
+#else
+        for (int j = 0; j < cols; j++)
+            if (ptr[j] != 0)
+                idxvec.push_back(Point(j, i));
+#endif
+    }
+}
+
 void findNonZero(InputArray _src, OutputArray _idx)
 {
     Mat src = _src.getMat();
     CV_Assert( src.channels() == 1 && src.dims == 2 );
 
-    int depth = src.depth();
     std::vector<Point> idxvec;
-    int rows = src.rows, cols = src.cols;
-    AutoBuffer<int> buf_(cols + 1);
-    int* buf = buf_.data();
-
-    for( int i = 0; i < rows; i++ )
+    
+    // Type dispatch table
+    typedef void (*FindNonZeroFunc)(const Mat&, std::vector<Point>&);
+    static FindNonZeroFunc funcs[CV_DEPTH_MAX] = 
     {
-        int j, k = 0;
-        const uchar* ptr8 = src.ptr(i);
-        if( depth == CV_8U || depth == CV_8S )
-        {
-            for( j = 0; j < cols; j++ )
-                if( ptr8[j] != 0 ) buf[k++] = j;
-        }
-        else if( depth == CV_16U || depth == CV_16S )
-        {
-            const ushort* ptr16 = (const ushort*)ptr8;
-            for( j = 0; j < cols; j++ )
-                if( ptr16[j] != 0 ) buf[k++] = j;
-        }
-        else if( depth == CV_32S )
-        {
-            const int* ptr32s = (const int*)ptr8;
-            for( j = 0; j < cols; j++ )
-                if( ptr32s[j] != 0 ) buf[k++] = j;
-        }
-        else if( depth == CV_32F )
-        {
-            const float* ptr32f = (const float*)ptr8;
-            for( j = 0; j < cols; j++ )
-                if( ptr32f[j] != 0 ) buf[k++] = j;
-        }
-        else
-        {
-            const double* ptr64f = (const double*)ptr8;
-            for( j = 0; j < cols; j++ )
-                if( ptr64f[j] != 0 ) buf[k++] = j;
-        }
-
-        if( k > 0 )
-        {
-            size_t sz = idxvec.size();
-            idxvec.resize(sz + k);
-            for( j = 0; j < k; j++ )
-                idxvec[sz + j] = Point(buf[j], i);
-        }
-    }
-
+        findNonZeroImpl<uchar>,   // CV_8U
+        findNonZeroImpl<schar>,   // CV_8S  
+        findNonZeroImpl<ushort>,  // CV_16U
+        findNonZeroImpl<short>,   // CV_16S
+        findNonZeroImpl<int>,     // CV_32S
+        findNonZeroImpl<float>,   // CV_32F
+        findNonZeroImpl<double>,  // CV_64F
+        0
+    };
+    
+    FindNonZeroFunc func = funcs[src.depth()];
+    CV_Assert( func != 0 );
+    
+    func(src, idxvec);
+    
     if( idxvec.empty() || (_idx.kind() == _InputArray::MAT && !_idx.getMatRef().isContinuous()) )
         _idx.release();
 
