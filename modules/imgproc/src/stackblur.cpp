@@ -112,6 +112,87 @@ inline int opRow<uchar>(const uchar* srcPtr, uchar* dstPtr, const std::vector<us
     if (kernelSize == 3)
     {
         v_uint32 v_mulVal = vx_setall_u32(mulValTab);
+        
+        // Process multiple vector lines at once for better instruction-level parallelism
+        const int VEC_LINE2 = VEC_LINE * 2;
+        const int VEC_LINE4 = VEC_LINE * 4;
+        
+        // Unrolled loop for better performance with wider SIMD registers
+        for (; i <= widthCN - VEC_LINE4; i += VEC_LINE4)
+        {
+            // Process 4 vector lines at once
+            v_uint16 x0l0, x0h0, x1l0, x1h0, x2l0, x2h0;
+            v_uint16 x0l1, x0h1, x1l1, x1h1, x2l1, x2h1;
+            v_uint16 x0l2, x0h2, x1l2, x1h2, x2l2, x2h2;
+            v_uint16 x0l3, x0h3, x1l3, x1h3, x2l3, x2h3;
+            
+            // Load data for all 4 lines
+            v_expand(vx_load(srcPtr + i - CN), x0l0, x0h0);
+            v_expand(vx_load(srcPtr + i), x1l0, x1h0);
+            v_expand(vx_load(srcPtr + i + CN), x2l0, x2h0);
+            
+            v_expand(vx_load(srcPtr + i + VEC_LINE - CN), x0l1, x0h1);
+            v_expand(vx_load(srcPtr + i + VEC_LINE), x1l1, x1h1);
+            v_expand(vx_load(srcPtr + i + VEC_LINE + CN), x2l1, x2h1);
+            
+            v_expand(vx_load(srcPtr + i + VEC_LINE2 - CN), x0l2, x0h2);
+            v_expand(vx_load(srcPtr + i + VEC_LINE2), x1l2, x1h2);
+            v_expand(vx_load(srcPtr + i + VEC_LINE2 + CN), x2l2, x2h2);
+            
+            v_expand(vx_load(srcPtr + i + VEC_LINE2 + VEC_LINE - CN), x0l3, x0h3);
+            v_expand(vx_load(srcPtr + i + VEC_LINE2 + VEC_LINE), x1l3, x1h3);
+            v_expand(vx_load(srcPtr + i + VEC_LINE2 + VEC_LINE + CN), x2l3, x2h3);
+            
+            // Compute weighted sums
+            x1l0 = v_add_wrap(v_add_wrap(x1l0, x1l0), v_add_wrap(x0l0, x2l0));
+            x1h0 = v_add_wrap(v_add_wrap(x1h0, x1h0), v_add_wrap(x0h0, x2h0));
+            x1l1 = v_add_wrap(v_add_wrap(x1l1, x1l1), v_add_wrap(x0l1, x2l1));
+            x1h1 = v_add_wrap(v_add_wrap(x1h1, x1h1), v_add_wrap(x0h1, x2h1));
+            x1l2 = v_add_wrap(v_add_wrap(x1l2, x1l2), v_add_wrap(x0l2, x2l2));
+            x1h2 = v_add_wrap(v_add_wrap(x1h2, x1h2), v_add_wrap(x0h2, x2h2));
+            x1l3 = v_add_wrap(v_add_wrap(x1l3, x1l3), v_add_wrap(x0l3, x2l3));
+            x1h3 = v_add_wrap(v_add_wrap(x1h3, x1h3), v_add_wrap(x0h3, x2h3));
+            
+            // Expand and multiply/shift for all lines
+            v_uint32 y00, y01, y10, y11;
+            v_uint32 y20, y21, y30, y31;
+            v_uint32 y40, y41, y50, y51;
+            v_uint32 y60, y61, y70, y71;
+            
+            v_expand(x1l0, y00, y01);
+            v_expand(x1h0, y10, y11);
+            v_expand(x1l1, y20, y21);
+            v_expand(x1h1, y30, y31);
+            v_expand(x1l2, y40, y41);
+            v_expand(x1h2, y50, y51);
+            v_expand(x1l3, y60, y61);
+            v_expand(x1h3, y70, y71);
+            
+            y00 = v_shr(v_mul(y00, v_mulVal), shrValTab);
+            y01 = v_shr(v_mul(y01, v_mulVal), shrValTab);
+            y10 = v_shr(v_mul(y10, v_mulVal), shrValTab);
+            y11 = v_shr(v_mul(y11, v_mulVal), shrValTab);
+            y20 = v_shr(v_mul(y20, v_mulVal), shrValTab);
+            y21 = v_shr(v_mul(y21, v_mulVal), shrValTab);
+            y30 = v_shr(v_mul(y30, v_mulVal), shrValTab);
+            y31 = v_shr(v_mul(y31, v_mulVal), shrValTab);
+            y40 = v_shr(v_mul(y40, v_mulVal), shrValTab);
+            y41 = v_shr(v_mul(y41, v_mulVal), shrValTab);
+            y50 = v_shr(v_mul(y50, v_mulVal), shrValTab);
+            y51 = v_shr(v_mul(y51, v_mulVal), shrValTab);
+            y60 = v_shr(v_mul(y60, v_mulVal), shrValTab);
+            y61 = v_shr(v_mul(y61, v_mulVal), shrValTab);
+            y70 = v_shr(v_mul(y70, v_mulVal), shrValTab);
+            y71 = v_shr(v_mul(y71, v_mulVal), shrValTab);
+            
+            // Store results
+            v_store(dstPtr + i, v_pack(v_pack(y00, y01), v_pack(y10, y11)));
+            v_store(dstPtr + i + VEC_LINE, v_pack(v_pack(y20, y21), v_pack(y30, y31)));
+            v_store(dstPtr + i + VEC_LINE2, v_pack(v_pack(y40, y41), v_pack(y50, y51)));
+            v_store(dstPtr + i + VEC_LINE2 + VEC_LINE, v_pack(v_pack(y60, y61), v_pack(y70, y71)));
+        }
+        
+        // Process remaining vectors
         for (; i <= widthCN - VEC_LINE; i += VEC_LINE)
         {
             v_uint16 x0l, x0h, x1l, x1h, x2l, x2h;
@@ -460,6 +541,14 @@ public:
     }
 
     ~ParallelStackBlurRow() {}
+    
+    // Helper function for cache prefetching
+    inline void prefetchLine(const T* ptr, int offset) const
+    {
+#if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
+        __builtin_prefetch(ptr + offset, 0, 1);
+#endif
+    }
 
     /*
      * The idea is as follows:
