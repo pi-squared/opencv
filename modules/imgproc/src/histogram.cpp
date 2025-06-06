@@ -3290,6 +3290,40 @@ public:
         for (const uchar* ptr = src_.ptr<uchar>(rowRange.start); height--; ptr += sstep)
         {
             int x = 0;
+            
+#if CV_SIMD
+            // SIMD optimization: process multiple pixels at once
+            const int nlanes = v_uint8::nlanes;
+            
+            // For AVX-512, we can process 64 pixels at once
+            // For AVX2, we process 32 pixels at once
+            // For SSE, we process 16 pixels at once
+            for (; x <= width - nlanes; x += nlanes)
+            {
+                v_uint8 v_pixels = vx_load(ptr + x);
+                
+                // Extract and count each pixel value
+                // We need to extract values individually since we're building a histogram
+                alignas(32) uchar pixels[nlanes];
+                v_store(pixels, v_pixels);
+                
+                // Unroll by 4 for better performance
+                int i = 0;
+                for (; i <= nlanes - 4; i += 4)
+                {
+                    localHistogram[pixels[i]]++;
+                    localHistogram[pixels[i+1]]++;
+                    localHistogram[pixels[i+2]]++;
+                    localHistogram[pixels[i+3]]++;
+                }
+                for (; i < nlanes; i++)
+                {
+                    localHistogram[pixels[i]]++;
+                }
+            }
+#endif
+            
+            // Original 4-pixel processing for remaining pixels
             for (; x <= width - 4; x += 4)
             {
                 int t0 = ptr[x], t1 = ptr[x+1];
@@ -3351,6 +3385,45 @@ public:
         for (; height--; sptr += sstep, dptr += dstep)
         {
             int x = 0;
+            
+#if CV_SIMD
+            // SIMD optimization for LUT application
+            const int nlanes = v_uint8::nlanes;
+            
+            // Process multiple pixels at once using SIMD
+            for (; x <= width - nlanes; x += nlanes)
+            {
+                v_uint8 v_src = vx_load(sptr + x);
+                
+                // Extract source values and apply LUT
+                alignas(32) uchar src_pixels[nlanes];
+                alignas(32) uchar dst_pixels[nlanes];
+                v_store(src_pixels, v_src);
+                
+                // Unroll by 8 for better performance
+                int i = 0;
+                for (; i <= nlanes - 8; i += 8)
+                {
+                    dst_pixels[i] = (uchar)lut[src_pixels[i]];
+                    dst_pixels[i+1] = (uchar)lut[src_pixels[i+1]];
+                    dst_pixels[i+2] = (uchar)lut[src_pixels[i+2]];
+                    dst_pixels[i+3] = (uchar)lut[src_pixels[i+3]];
+                    dst_pixels[i+4] = (uchar)lut[src_pixels[i+4]];
+                    dst_pixels[i+5] = (uchar)lut[src_pixels[i+5]];
+                    dst_pixels[i+6] = (uchar)lut[src_pixels[i+6]];
+                    dst_pixels[i+7] = (uchar)lut[src_pixels[i+7]];
+                }
+                for (; i < nlanes; i++)
+                {
+                    dst_pixels[i] = (uchar)lut[src_pixels[i]];
+                }
+                
+                v_uint8 v_dst = vx_load(dst_pixels);
+                v_store(dptr + x, v_dst);
+            }
+#endif
+            
+            // Original 4-pixel processing for remaining pixels
             for (; x <= width - 4; x += 4)
             {
                 int v0 = sptr[x];
