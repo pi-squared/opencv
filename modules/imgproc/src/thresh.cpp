@@ -43,6 +43,7 @@
 #include "precomp.hpp"
 #include "opencl_kernels_imgproc.hpp"
 #include "opencv2/core/hal/intrin.hpp"
+#include "adaptive_threshold.simd.hpp"
 
 namespace cv
 {
@@ -1960,14 +1961,20 @@ void cv::adaptiveThreshold( InputArray _src, OutputArray _dst, double maxValue,
         size.height = 1;
     }
 
-    for( i = 0; i < size.height; i++ )
+    // Use optimized SIMD implementation
+#if CV_AVX512_SKX
+    if( size.width >= 64 && size.height >= 4 )
     {
-        const uchar* sdata = src.ptr(i);
-        const uchar* mdata = mean.ptr(i);
-        uchar* ddata = dst.ptr(i);
-
-        for( j = 0; j < size.width; j++ )
-            ddata[j] = tab[sdata[j] - mdata[j] + 255];
+        hal::adaptiveThresholdAVX512(src.ptr(), src.step, mean.ptr(), mean.step,
+                                      dst.ptr(), dst.step, size.width, size.height,
+                                      imaxval, idelta, type);
+    }
+    else
+#endif
+    {
+        hal::adaptiveThresholdSIMD(src.ptr(), src.step, mean.ptr(), mean.step,
+                                   dst.ptr(), dst.step, size.width, size.height,
+                                   imaxval, idelta, type);
     }
 }
 
