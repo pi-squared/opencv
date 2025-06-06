@@ -63,7 +63,13 @@
 
 #ifdef OPENCV_ALLOC_ENABLE_STATISTICS
 #define OPENCV_ALLOC_STATISTICS_LIMIT 4096  // don't track buffers less than N bytes
-#include <map>
+#include <unordered_map>
+#endif
+
+// Enable C++17 aligned_alloc when available
+#if defined(__cplusplus) && __cplusplus >= 201703L && !defined(_MSC_VER)
+#include <cstdlib>
+#define HAVE_STD_ALIGNED_ALLOC
 #endif
 
 namespace cv {
@@ -130,7 +136,17 @@ void* fastMalloc_(size_t size)
 void* fastMalloc(size_t size)
 #endif
 {
-#ifdef HAVE_POSIX_MEMALIGN
+#ifdef HAVE_STD_ALIGNED_ALLOC
+    if (isAlignedAllocationEnabled())
+    {
+        // C++17 aligned_alloc requires size to be a multiple of alignment
+        size_t alignedSize = (size + CV_MALLOC_ALIGN - 1) & ~(size_t)(CV_MALLOC_ALIGN - 1);
+        void* ptr = std::aligned_alloc(CV_MALLOC_ALIGN, alignedSize);
+        if(!ptr)
+            return OutOfMemoryError(size);
+        return ptr;
+    }
+#elif defined HAVE_POSIX_MEMALIGN
     if (isAlignedAllocationEnabled())
     {
         void* ptr = NULL;
@@ -172,7 +188,7 @@ void fastFree_(void* ptr)
 void fastFree(void* ptr)
 #endif
 {
-#if defined HAVE_POSIX_MEMALIGN || defined HAVE_MEMALIGN
+#if defined HAVE_STD_ALIGNED_ALLOC || defined HAVE_POSIX_MEMALIGN || defined HAVE_MEMALIGN
     if (isAlignedAllocationEnabled())
     {
         free(ptr);
@@ -204,7 +220,7 @@ Mutex& getAllocationStatisticsMutex()
     return *p_alloc_mutex;
 }
 
-static std::map<void*, size_t> allocated_buffers;  // guarded by getAllocationStatisticsMutex()
+static std::unordered_map<void*, size_t> allocated_buffers;  // guarded by getAllocationStatisticsMutex()
 
 void* fastMalloc(size_t size)
 {
@@ -222,7 +238,7 @@ void fastFree(void* ptr)
 {
     {
         cv::AutoLock lock(getAllocationStatisticsMutex());
-        std::map<void*, size_t>::iterator i = allocated_buffers.find(ptr);
+        std::unordered_map<void*, size_t>::iterator i = allocated_buffers.find(ptr);
         if (i != allocated_buffers.end())
         {
             size_t size = i->second;
