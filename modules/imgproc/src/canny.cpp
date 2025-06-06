@@ -434,7 +434,28 @@ public:
                 if (L2gradient)
                 {
                     int j = 0, width = src.cols * cn;
-#if (CV_SIMD || CV_SIMD_SCALABLE)
+#if CV_SIMD512
+                    // AVX-512 optimization for L2 gradient magnitude calculation
+                    // Process 32 values at once (32 x int16 -> 32 x int32)
+                    for ( ; j <= width - 32; j += 32)
+                    {
+                        v_int16x32 v_dx = vx_load((const short*)(_dx + j));
+                        v_int16x32 v_dy = vx_load((const short*)(_dy + j));
+
+                        // Convert to 32-bit integers and square
+                        v_int32x16 v_dxp_low, v_dxp_high;
+                        v_int32x16 v_dyp_low, v_dyp_high;
+                        v_expand(v_dx, v_dxp_low, v_dxp_high);
+                        v_expand(v_dy, v_dyp_low, v_dyp_high);
+                        
+                        // Calculate magnitude squared
+                        v_int32x16 v_mag_low = v_add(v_mul(v_dxp_low, v_dxp_low), v_mul(v_dyp_low, v_dyp_low));
+                        v_int32x16 v_mag_high = v_add(v_mul(v_dxp_high, v_dxp_high), v_mul(v_dyp_high, v_dyp_high));
+                        
+                        v_store_aligned((int *)(_mag_n + j), v_mag_low);
+                        v_store_aligned((int *)(_mag_n + j + 16), v_mag_high);
+                    }
+#elif (CV_SIMD || CV_SIMD_SCALABLE)
                     for ( ; j <= width - VTraits<v_int16>::vlanes(); j += VTraits<v_int16>::vlanes())
                     {
                         v_int16 v_dx = vx_load((const short*)(_dx + j));
@@ -455,7 +476,27 @@ public:
                 else
                 {
                     int j = 0, width = src.cols * cn;
-#if (CV_SIMD || CV_SIMD_SCALABLE)
+#if CV_SIMD512
+                    // AVX-512 optimization for L1 gradient magnitude calculation
+                    // Process 32 values at once
+                    for(; j <= width - 32; j += 32)
+                    {
+                        v_int16x32 v_dx = vx_load((const short *)(_dx + j));
+                        v_int16x32 v_dy = vx_load((const short *)(_dy + j));
+
+                        // Use absolute value operations
+                        v_dx = v_abs(v_dx);
+                        v_dy = v_abs(v_dy);
+
+                        // Expand and add
+                        v_int32x16 v_dx_ml, v_dx_mh, v_dy_ml, v_dy_mh;
+                        v_expand(v_dx, v_dx_ml, v_dx_mh);
+                        v_expand(v_dy, v_dy_ml, v_dy_mh);
+
+                        v_store_aligned((int *)(_mag_n + j), v_add(v_dx_ml, v_dy_ml));
+                        v_store_aligned((int *)(_mag_n + j + 16), v_add(v_dx_mh, v_dy_mh));
+                    }
+#elif (CV_SIMD || CV_SIMD_SCALABLE)
                     for(; j <= width - VTraits<v_int16>::vlanes(); j += VTraits<v_int16>::vlanes())
                     {
                         v_int16 v_dx = vx_load((const short *)(_dx + j));
@@ -535,7 +576,75 @@ public:
 
             const int TG22 = 13573;
             int j = 0;
-#if (CV_SIMD || CV_SIMD_SCALABLE)
+#if CV_SIMD512
+            {
+                // AVX-512 optimized non-maximum suppression
+                const v_int32x16 v_low = vx_setall<v_int32x16>(low);
+                const v_int32x16 v_high = vx_setall<v_int32x16>(high);
+                const v_int8x64 v_one = vx_setall<v_int8x64>(1);
+                const v_int32x16 v_tg22 = v512_setall_s32(TG22);
+
+                for (; j <= src.cols - 64; j += 64)
+                {
+                    // Initialize all pixels as suppressed (1)
+                    v_store_aligned((signed char*)(_pmap + j), v_one);
+                    
+                    // Process 16 pixels at a time (4 groups of 16)
+                    for (int jj = 0; jj < 64; jj += 16)
+                    {
+                        v_int32x16 v_mag = vx_load_aligned((const int *)(_mag_a + j + jj));
+                        
+                        // Check if magnitude > low threshold
+                        v_int32x16 v_mask = v_gt(v_mag, v_low);
+                        
+                        if (v_check_any(v_mask))
+                        {
+                            // Process each pixel that passed low threshold
+                            for (int idx = 0; idx < 16; idx++)
+                            {
+                                if (v_extract_n<idx>(v_mask))
+                                {
+                                    int k = j + jj + idx;
+                                    int m = _mag_a[k];
+                                    short xs = _dx[k];
+                                    short ys = _dy[k];
+                                    int x = (int)std::abs(xs);
+                                    int y = (int)std::abs(ys) << 15;
+                                    int tg22x = x * TG22;
+                                    
+                                    if (y < tg22x)
+                                    {
+                                        if (m > _mag_a[k - 1] && m >= _mag_a[k + 1])
+                                        {
+                                            CANNY_CHECK(m, high, (_pmap+k), stack);
+                                        }
+                                    }
+                                    else
+                                    {
+                                        int tg67x = tg22x + (x << 16);
+                                        if (y > tg67x)
+                                        {
+                                            if (m > _mag_p[k] && m >= _mag_n[k])
+                                            {
+                                                CANNY_CHECK(m, high, (_pmap+k), stack);
+                                            }
+                                        }
+                                        else
+                                        {
+                                            int s = (xs ^ ys) < 0 ? -1 : 1;
+                                            if(m > _mag_p[k - s] && m > _mag_n[k + s])
+                                            {
+                                                CANNY_CHECK(m, high, (_pmap+k), stack);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+#elif (CV_SIMD || CV_SIMD_SCALABLE)
             {
                 const v_int32 v_low = vx_setall_s32(low);
                 const v_int8 v_one = vx_setall_s8(1);
@@ -722,7 +831,22 @@ public:
             else
 #endif
                 pmap += 1;
-#if (CV_SIMD || CV_SIMD_SCALABLE)
+#if CV_SIMD512
+            {
+                // AVX-512 optimization for final pass
+                const v_uint8x64 v_zero = vx_setzero<v_uint8x64>();
+                const v_uint8x64 v_ff = v_not(v_zero);
+                const v_uint8x64 v_two = vx_setall<v_uint8x64>(2);
+
+                // Process 64 bytes at once with AVX-512
+                for (; j <= dst.cols - 64; j += 64)
+                {
+                    v_uint8x64 v_pmap = vx_load_aligned((const unsigned char*)(pmap + j));
+                    v_pmap = v_select(v_eq(v_pmap, v_two), v_ff, v_zero);
+                    v_store((pdst + j), v_pmap);
+                }
+            }
+#elif (CV_SIMD || CV_SIMD_SCALABLE)
             {
                 const v_uint8 v_zero = vx_setzero_u8();
                 const v_uint8 v_ff = v_not(v_zero);
