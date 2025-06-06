@@ -140,6 +140,34 @@
 - Handles both aligned and unaligned image widths correctly
 - Falls back to original implementation for unsupported threshold types
 
+### 7. Histogram Equalization SIMD Optimization (optimize-equalize-hist-avx512)
+**Date**: 2025-06-06
+**Branch**: optimize-equalize-hist-avx512
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/histogram.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for histogram calculation in EqualizeHistCalcHist_Invoker
+  - Process up to 64 pixels at once on AVX-512, 32 on AVX2, 16 on SSE
+  - Maintains 4-pixel unrolling for better instruction-level parallelism
+  - Falls back to original implementation for remaining pixels
+- Added SIMD optimization for LUT application in EqualizeHistLut_Invoker
+  - Process multiple pixels at once using SIMD loads/stores
+  - 8x unrolling for better performance
+  - Maintains bit-exact compatibility with original implementation
+
+**Expected Performance Gains**:
+- Histogram calculation: 2-3x speedup on AVX-512
+- LUT application: 2x speedup with wider SIMD processing
+- Overall equalizeHist performance: ~2x improvement on large images
+- Benefits scale with SIMD width (SSE < AVX2 < AVX-512)
+
+**Testing Notes**:
+- Maintains bit-exact compatibility with original implementation
+- Automatic CPU detection via OpenCV's universal intrinsics
+- Benefits most when processing larger images (HD/4K)
+- The optimization is transparent to users - same API
+
 ## Future Optimization Opportunities
 1. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
 2. **Template Matching**: The correlation operations in templmatch.cpp could use AVX-512 FMA instructions
