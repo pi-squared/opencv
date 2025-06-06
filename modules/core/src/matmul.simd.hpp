@@ -1337,11 +1337,35 @@ callGemmImpl(const fptype *src1, size_t src1_step, const fptype *src2, size_t sr
     gemmImpl(A, B, alpha, C, beta, D, flags);
 }
 
+// Forward declaration for optimized version
+#if defined(__AVX512F__) || defined(__AVX2__)
+void gemm32f_opt(const float* src1, size_t src1_step, const float* src2, size_t src2_step,
+                 float alpha, const float* src3, size_t src3_step, float beta, 
+                 float* dst, size_t dst_step,
+                 int m_a, int n_a, int n_d, int flags);
+#endif
+
 void gemm32f(const float* src1, size_t src1_step, const float* src2, size_t src2_step,
              float alpha, const float* src3, size_t src3_step, float beta, float* dst, size_t dst_step,
              int m_a, int n_a, int n_d, int flags)
 {
     CV_INSTRUMENT_REGION();
+    
+#if defined(__AVX512F__) || defined(__AVX2__)
+    // Use optimized implementation for suitable matrix sizes
+    bool trans_a = (flags & GEMM_1_T) != 0;
+    bool trans_b = (flags & GEMM_2_T) != 0;
+    size_t M = trans_a ? n_a : m_a;
+    size_t N = n_d;
+    
+    // Use optimized version for larger matrices where SIMD benefits are significant
+    if (M >= 32 && N >= 32 && !trans_a && !trans_b) {
+        gemm32f_opt(src1, src1_step, src2, src2_step, alpha, src3, src3_step, beta, dst, dst_step, m_a, n_a, n_d, flags);
+        return;
+    }
+#endif
+    
+    // Fall back to baseline implementation
     callGemmImpl(src1, src1_step, src2, src2_step, alpha, src3, src3_step, beta, dst, dst_step, m_a, n_a, n_d, flags, CV_32F);
 }
 
