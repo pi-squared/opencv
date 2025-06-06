@@ -42,6 +42,7 @@
 #include "precomp.hpp"
 #include "opencl_kernels_imgproc.hpp"
 #include "opencv2/core/hal/intrin.hpp"
+#include "histogram.simd.hpp"
 
 #include "opencv2/core/openvx/ovx_defs.hpp"
 
@@ -3466,14 +3467,27 @@ void cv::equalizeHist( InputArray _src, OutputArray _dst )
     int hist[hist_sz] = {0,};
     int lut[hist_sz];
 
+#if CV_SIMD
+    // Use SIMD-optimized versions when available
+    EqualizeHistCalcHist_SIMD_Invoker calcBodySIMD(src, hist, &histogramLockInstance);
+    EqualizeHistLut_SIMD_Invoker      lutBodySIMD(src, dst, lut);
+#endif
     EqualizeHistCalcHist_Invoker calcBody(src, hist, &histogramLockInstance);
     EqualizeHistLut_Invoker      lutBody(src, dst, lut);
     cv::Range heightRange(0, src.rows);
 
+#if CV_SIMD
+    // Use SIMD version for histogram calculation
+    if(EqualizeHistCalcHist_SIMD_Invoker::isWorthParallel(src))
+        parallel_for_(heightRange, calcBodySIMD);
+    else
+        calcBodySIMD(heightRange);
+#else
     if(EqualizeHistCalcHist_Invoker::isWorthParallel(src))
         parallel_for_(heightRange, calcBody);
     else
         calcBody(heightRange);
+#endif
 
     int i = 0;
     while (!hist[i]) ++i;
@@ -3494,10 +3508,18 @@ void cv::equalizeHist( InputArray _src, OutputArray _dst )
         lut[i] = saturate_cast<uchar>(sum * scale);
     }
 
+#if CV_SIMD
+    // Use SIMD version for LUT application
+    if(EqualizeHistLut_SIMD_Invoker::isWorthParallel(src))
+        parallel_for_(heightRange, lutBodySIMD);
+    else
+        lutBodySIMD(heightRange);
+#else
     if(EqualizeHistLut_Invoker::isWorthParallel(src))
         parallel_for_(heightRange, lutBody);
     else
         lutBody(heightRange);
+#endif
 }
 
 #if 0
