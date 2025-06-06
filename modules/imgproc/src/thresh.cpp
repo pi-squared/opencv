@@ -1960,14 +1960,103 @@ void cv::adaptiveThreshold( InputArray _src, OutputArray _dst, double maxValue,
         size.height = 1;
     }
 
-    for( i = 0; i < size.height; i++ )
+    // SIMD optimized implementation
+#if CV_SIMD
+    if( type == cv::THRESH_BINARY )
     {
-        const uchar* sdata = src.ptr(i);
-        const uchar* mdata = mean.ptr(i);
-        uchar* ddata = dst.ptr(i);
+        v_uint8 v_imaxval = vx_setall_u8(imaxval);
+        v_int16 v_idelta = vx_setall<short>((short)(-idelta));
+        
+        for( i = 0; i < size.height; i++ )
+        {
+            const uchar* sdata = src.ptr(i);
+            const uchar* mdata = mean.ptr(i);
+            uchar* ddata = dst.ptr(i);
+            
+            j = 0;
+            for( ; j <= size.width - VTraits<v_uint8>::vlanes(); j += VTraits<v_uint8>::vlanes() )
+            {
+                v_uint8 v_src = vx_load(sdata + j);
+                v_uint8 v_mean = vx_load(mdata + j);
+                
+                // Expand to 16-bit to handle signed arithmetic
+                v_int16 v_src_low, v_src_high, v_mean_low, v_mean_high;
+                v_expand(v_reinterpret_as_s8(v_src), v_src_low, v_src_high);
+                v_expand(v_reinterpret_as_s8(v_mean), v_mean_low, v_mean_high);
+                
+                // Calculate src - mean - delta
+                v_int16 v_diff_low = v_sub(v_src_low, v_mean_low);
+                v_int16 v_diff_high = v_sub(v_src_high, v_mean_high);
+                
+                // Compare with -idelta
+                v_uint8 v_result = v_pack(v_reinterpret_as_u16(v_gt(v_diff_low, v_idelta)), 
+                                         v_reinterpret_as_u16(v_gt(v_diff_high, v_idelta)));
+                
+                // Apply maxval where condition is true
+                v_result = v_and(v_result, v_imaxval);
+                
+                v_store(ddata + j, v_result);
+            }
+            
+            // Process remaining pixels
+            for( ; j < size.width; j++ )
+                ddata[j] = tab[sdata[j] - mdata[j] + 255];
+        }
+    }
+    else if( type == cv::THRESH_BINARY_INV )
+    {
+        v_uint8 v_imaxval = vx_setall_u8(imaxval);
+        v_int16 v_neg_idelta = vx_setall<short>((short)(-idelta));
+        
+        for( i = 0; i < size.height; i++ )
+        {
+            const uchar* sdata = src.ptr(i);
+            const uchar* mdata = mean.ptr(i);
+            uchar* ddata = dst.ptr(i);
+            
+            j = 0;
+            for( ; j <= size.width - VTraits<v_uint8>::vlanes(); j += VTraits<v_uint8>::vlanes() )
+            {
+                v_uint8 v_src = vx_load(sdata + j);
+                v_uint8 v_mean = vx_load(mdata + j);
+                
+                // Expand to 16-bit to handle signed arithmetic
+                v_int16 v_src_low, v_src_high, v_mean_low, v_mean_high;
+                v_expand(v_reinterpret_as_s8(v_src), v_src_low, v_src_high);
+                v_expand(v_reinterpret_as_s8(v_mean), v_mean_low, v_mean_high);
+                
+                // Calculate src - mean
+                v_int16 v_diff_low = v_sub(v_src_low, v_mean_low);
+                v_int16 v_diff_high = v_sub(v_src_high, v_mean_high);
+                
+                // Compare with -idelta (less than or equal)
+                v_uint8 v_result = v_pack(v_reinterpret_as_u16(v_le(v_diff_low, v_neg_idelta)), 
+                                         v_reinterpret_as_u16(v_le(v_diff_high, v_neg_idelta)));
+                
+                // Apply maxval where condition is true
+                v_result = v_and(v_result, v_imaxval);
+                
+                v_store(ddata + j, v_result);
+            }
+            
+            // Process remaining pixels
+            for( ; j < size.width; j++ )
+                ddata[j] = tab[sdata[j] - mdata[j] + 255];
+        }
+    }
+    else
+#endif
+    {
+        // Original implementation for non-SIMD or unsupported threshold types
+        for( i = 0; i < size.height; i++ )
+        {
+            const uchar* sdata = src.ptr(i);
+            const uchar* mdata = mean.ptr(i);
+            uchar* ddata = dst.ptr(i);
 
-        for( j = 0; j < size.width; j++ )
-            ddata[j] = tab[sdata[j] - mdata[j] + 255];
+            for( j = 0; j < size.width; j++ )
+                ddata[j] = tab[sdata[j] - mdata[j] + 255];
+        }
     }
 }
 
