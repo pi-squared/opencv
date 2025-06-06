@@ -41,6 +41,7 @@
 
 #include "precomp.hpp"
 #include "opencl_kernels_imgproc.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 ////////////////////////////////////////////////// matchTemplate //////////////////////////////////////////////////////////
 
@@ -563,6 +564,122 @@ static bool ocl_matchTemplate( InputArray _img, InputArray _templ, OutputArray _
 
 #include "opencv2/core/hal/hal.hpp"
 
+#if CV_AVX512_SKX
+
+// AVX-512 FMA optimized direct correlation for small templates
+static void matchTemplateNaiveFMA_AVX512(const Mat& img, const Mat& templ, Mat& result)
+{
+    CV_Assert(img.type() == CV_32F && templ.type() == CV_32F);
+    CV_Assert(img.channels() == templ.channels());
+    
+    const int cn = img.channels();
+    const int templ_h = templ.rows;
+    const int templ_w = templ.cols;
+    const int img_w = img.cols;
+    const int result_h = result.rows;
+    const int result_w = result.cols;
+    
+    const float* img_ptr = img.ptr<float>();
+    const float* templ_ptr = templ.ptr<float>();
+    float* result_ptr = result.ptr<float>();
+    
+    const int templ_step = templ_w * cn;
+    const int img_step = img_w * cn;
+    
+    // Process template width in chunks of 16 floats (AVX-512 width)
+    const int vec_size = 16;
+    const int templ_elems = templ_step;  // Total elements per template row
+    const int templ_elems_vec = templ_elems / vec_size;
+    const int templ_elems_tail = templ_elems % vec_size;
+    
+    // Create tail mask for partial vector loads
+    __mmask16 tail_mask = (__mmask16)((1u << templ_elems_tail) - 1);
+    
+    // Process each result position
+    for (int y = 0; y < result_h; y++)
+    {
+        for (int x = 0; x < result_w; x++)
+        {
+            // Use 4 accumulators to hide FMA latency
+            __m512 sum0 = _mm512_setzero_ps();
+            __m512 sum1 = _mm512_setzero_ps();
+            __m512 sum2 = _mm512_setzero_ps();
+            __m512 sum3 = _mm512_setzero_ps();
+            
+            // Process template rows
+            for (int ty = 0; ty < templ_h; ty++)
+            {
+                const float* img_row = img_ptr + (y + ty) * img_step + x * cn;
+                const float* templ_row = templ_ptr + ty * templ_step;
+                
+                // Process vectorized part with 4-way unrolling
+                int tx = 0;
+                for (; tx + 4 * vec_size <= templ_elems; tx += 4 * vec_size)
+                {
+                    // Load and FMA for 4 vectors
+                    __m512 img_vec0 = _mm512_loadu_ps(img_row + tx);
+                    __m512 templ_vec0 = _mm512_load_ps(templ_row + tx);
+                    sum0 = _mm512_fmadd_ps(img_vec0, templ_vec0, sum0);
+                    
+                    __m512 img_vec1 = _mm512_loadu_ps(img_row + tx + vec_size);
+                    __m512 templ_vec1 = _mm512_load_ps(templ_row + tx + vec_size);
+                    sum1 = _mm512_fmadd_ps(img_vec1, templ_vec1, sum1);
+                    
+                    __m512 img_vec2 = _mm512_loadu_ps(img_row + tx + 2 * vec_size);
+                    __m512 templ_vec2 = _mm512_load_ps(templ_row + tx + 2 * vec_size);
+                    sum2 = _mm512_fmadd_ps(img_vec2, templ_vec2, sum2);
+                    
+                    __m512 img_vec3 = _mm512_loadu_ps(img_row + tx + 3 * vec_size);
+                    __m512 templ_vec3 = _mm512_load_ps(templ_row + tx + 3 * vec_size);
+                    sum3 = _mm512_fmadd_ps(img_vec3, templ_vec3, sum3);
+                }
+                
+                // Process remaining full vectors
+                for (; tx + vec_size <= templ_elems; tx += vec_size)
+                {
+                    __m512 img_vec = _mm512_loadu_ps(img_row + tx);
+                    __m512 templ_vec = _mm512_load_ps(templ_row + tx);
+                    sum0 = _mm512_fmadd_ps(img_vec, templ_vec, sum0);
+                }
+                
+                // Process tail elements
+                if (templ_elems_tail > 0)
+                {
+                    __m512 img_vec = _mm512_maskz_loadu_ps(tail_mask, img_row + tx);
+                    __m512 templ_vec = _mm512_maskz_load_ps(tail_mask, templ_row + tx);
+                    sum0 = _mm512_fmadd_ps(img_vec, templ_vec, sum0);
+                }
+            }
+            
+            // Combine accumulators
+            sum0 = _mm512_add_ps(sum0, sum1);
+            sum2 = _mm512_add_ps(sum2, sum3);
+            sum0 = _mm512_add_ps(sum0, sum2);
+            
+            // Horizontal sum
+            result_ptr[y * result_w + x] = _mm512_reduce_add_ps(sum0);
+        }
+    }
+}
+
+// Check if we should use AVX-512 FMA optimization
+static bool shouldUseAVX512FMA(const Mat& img, const Mat& templ)
+{
+    // Use AVX-512 for float templates
+    if (img.type() != CV_32FC1 && img.type() != CV_32FC2 && 
+        img.type() != CV_32FC3 && img.type() != CV_32FC4)
+        return false;
+    
+    if (img.type() != templ.type())
+        return false;
+    
+    // Use for small to medium templates where DFT overhead is not worth it
+    const int templ_size = templ.rows * templ.cols;
+    return templ_size < 1024;  // Threshold can be tuned
+}
+
+#endif // CV_AVX512_SKX
+
 void crossCorr( const Mat& img, const Mat& _templ, Mat& corr,
                 Point anchor, double delta, int borderType )
 {
@@ -588,6 +705,16 @@ void crossCorr( const Mat& img, const Mat& _templ, Mat& corr,
                corr.cols <= img.cols + templ.cols - 1 );
 
     CV_Assert( ccn == 1 || delta == 0 );
+
+#if CV_AVX512_SKX
+    // Use AVX-512 FMA optimization for small templates and compatible conditions
+    if (delta == 0 && anchor == Point(0, 0) && borderType == 0 && 
+        shouldUseAVX512FMA(img, templ) && corr.type() == CV_32F)
+    {
+        matchTemplateNaiveFMA_AVX512(img, templ, corr);
+        return;
+    }
+#endif
 
     int maxDepth = depth > CV_8S ? CV_64F : std::max(std::max(CV_32F, tdepth), cdepth);
     Size blocksize, dftsize;
