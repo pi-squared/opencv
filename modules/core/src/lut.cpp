@@ -6,6 +6,7 @@
 #include "precomp.hpp"
 #include "opencl_kernels_core.hpp"
 #include "convert.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 /****************************************************************************************\
 *                                    LUT Transform                                       *
@@ -13,6 +14,134 @@
 
 namespace cv
 {
+
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+// SIMD-optimized LUT for 8-bit to 8-bit transformation
+static void LUT8u_8u_simd( const uchar* src, const uchar* lut, uchar* dst, int len, int cn, int lutcn )
+{
+    if( lutcn == 1 )
+    {
+        int i = 0;
+        const int vlanes = VTraits<v_uint8>::vlanes();
+        
+        // Process multiple vectors at once for better cache utilization
+        const int unroll = 4;
+        for( ; i <= len*cn - vlanes*unroll; i += vlanes*unroll )
+        {
+            // Load multiple vectors
+            v_uint8 vsrc0 = vx_load(src + i);
+            v_uint8 vsrc1 = vx_load(src + i + vlanes);
+            v_uint8 vsrc2 = vx_load(src + i + vlanes*2);
+            v_uint8 vsrc3 = vx_load(src + i + vlanes*3);
+            
+            // Extract indices and perform lookups
+            uchar CV_DECL_ALIGNED(CV_SIMD_WIDTH) idx0[vlanes], idx1[vlanes], idx2[vlanes], idx3[vlanes];
+            v_store_aligned(idx0, vsrc0);
+            v_store_aligned(idx1, vsrc1);
+            v_store_aligned(idx2, vsrc2);
+            v_store_aligned(idx3, vsrc3);
+            
+            // Perform lookups with better memory access pattern
+            for( int j = 0; j < vlanes; j++ )
+            {
+                idx0[j] = lut[idx0[j]];
+                idx1[j] = lut[idx1[j]];
+                idx2[j] = lut[idx2[j]];
+                idx3[j] = lut[idx3[j]];
+            }
+            
+            // Store results
+            v_store(dst + i, vx_load_aligned(idx0));
+            v_store(dst + i + vlanes, vx_load_aligned(idx1));
+            v_store(dst + i + vlanes*2, vx_load_aligned(idx2));
+            v_store(dst + i + vlanes*3, vx_load_aligned(idx3));
+        }
+        
+        // Process remaining full vectors
+        for( ; i <= len*cn - vlanes; i += vlanes )
+        {
+            v_uint8 vsrc = vx_load(src + i);
+            uchar CV_DECL_ALIGNED(CV_SIMD_WIDTH) temp[vlanes];
+            v_store_aligned(temp, vsrc);
+            
+            for( int j = 0; j < vlanes; j++ )
+                temp[j] = lut[temp[j]];
+            
+            v_store(dst + i, vx_load_aligned(temp));
+        }
+        vx_cleanup();
+        
+        // Process remaining pixels
+        for( ; i < len*cn; i++ )
+            dst[i] = lut[src[i]];
+    }
+    else
+    {
+        // Multi-channel LUT
+        for( int i = 0; i < len*cn; i += cn )
+            for( int k = 0; k < cn; k++ )
+                dst[i+k] = lut[src[i+k]*cn+k];
+    }
+}
+
+// SIMD-optimized LUT for 8-bit to 16-bit transformation
+static void LUT8u_16u_simd( const uchar* src, const ushort* lut, ushort* dst, int len, int cn, int lutcn )
+{
+    if( lutcn == 1 )
+    {
+        int i = 0;
+        const int step = VTraits<v_uint16>::vlanes();
+        
+        // Process two vectors at once for better performance
+        for( ; i <= len*cn - step*2; i += step*2 )
+        {
+            // Load and expand 16 bytes to two 16-bit vectors
+            v_uint8 vsrc8 = vx_load(src + i);
+            v_uint16 vsrc0, vsrc1;
+            v_expand(vsrc8, vsrc0, vsrc1);
+            
+            ushort CV_DECL_ALIGNED(CV_SIMD_WIDTH) idx0[step], idx1[step];
+            v_store_aligned(idx0, vsrc0);
+            v_store_aligned(idx1, vsrc1);
+            
+            // Perform lookups
+            for( int j = 0; j < step; j++ )
+            {
+                idx0[j] = lut[idx0[j]];
+                idx1[j] = lut[idx1[j]];
+            }
+            
+            v_store(dst + i, vx_load_aligned(idx0));
+            v_store(dst + i + step, vx_load_aligned(idx1));
+        }
+        
+        // Process remaining full vectors
+        for( ; i <= len*cn - step; i += step )
+        {
+            v_uint16 vsrc = v_expand_low(vx_load_low(src + i));
+            ushort CV_DECL_ALIGNED(CV_SIMD_WIDTH) temp[step];
+            v_store_aligned(temp, vsrc);
+            
+            for( int j = 0; j < step; j++ )
+                temp[j] = lut[temp[j]];
+            
+            v_store(dst + i, vx_load_aligned(temp));
+        }
+        vx_cleanup();
+        
+        // Process remaining pixels
+        for( ; i < len*cn; i++ )
+            dst[i] = lut[src[i]];
+    }
+    else
+    {
+        // Multi-channel LUT
+        for( int i = 0; i < len*cn; i += cn )
+            for( int k = 0; k < cn; k++ )
+                dst[i+k] = lut[src[i+k]*cn+k];
+    }
+}
+#endif
 
 template<typename T> static void
 LUT8u_( const uchar* src, const T* lut, T* dst, int len, int cn, int lutcn )
@@ -32,7 +161,11 @@ LUT8u_( const uchar* src, const T* lut, T* dst, int len, int cn, int lutcn )
 
 static void LUT8u_8u( const uchar* src, const uchar* lut, uchar* dst, int len, int cn, int lutcn )
 {
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+    LUT8u_8u_simd( src, lut, dst, len, cn, lutcn );
+#else
     LUT8u_( src, lut, dst, len, cn, lutcn );
+#endif
 }
 
 static void LUT8u_8s( const uchar* src, const schar* lut, schar* dst, int len, int cn, int lutcn )
@@ -42,7 +175,11 @@ static void LUT8u_8s( const uchar* src, const schar* lut, schar* dst, int len, i
 
 static void LUT8u_16u( const uchar* src, const ushort* lut, ushort* dst, int len, int cn, int lutcn )
 {
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+    LUT8u_16u_simd( src, lut, dst, len, cn, lutcn );
+#else
     LUT8u_( src, lut, dst, len, cn, lutcn );
+#endif
 }
 
 static void LUT8u_16s( const uchar* src, const short* lut, short* dst, int len, int cn, int lutcn )
