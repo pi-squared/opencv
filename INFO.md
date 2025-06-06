@@ -115,11 +115,35 @@
 - Benefits most when processing larger images (HD/4K)
 - Automatic CPU detection via OpenCV's dispatch system
 
+### 6. Adaptive Threshold SIMD Optimization (optimize-adaptive-threshold-v3)
+**Date**: 2025-06-06
+**Branch**: optimize-adaptive-threshold-v3
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/thresh.cpp
+
+**Improvements Made**:
+- Implemented SIMD optimization for THRESH_BINARY and THRESH_BINARY_INV threshold types
+- Replaced table lookup approach with direct SIMD comparisons
+- Uses universal intrinsics for cross-platform SIMD support
+- Processes 16/32/64 pixels simultaneously depending on SIMD width
+- Maintains bit-exact compatibility with original implementation
+
+**Expected Performance Gains**:
+- 2-3x speedup for THRESH_BINARY and THRESH_BINARY_INV operations
+- Better cache utilization by eliminating lookup table
+- Improved instruction-level parallelism
+- Scales with SIMD width (SSE: 16 pixels, AVX2: 32 pixels, AVX-512: 64 pixels)
+
+**Testing Notes**:
+- Created verification program to ensure bit-exact compatibility
+- Tested with various image sizes and patterns
+- Handles both aligned and unaligned image widths correctly
+- Falls back to original implementation for unsupported threshold types
+
 ## Future Optimization Opportunities
 1. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
 2. **Template Matching**: The correlation operations in templmatch.cpp could use AVX-512 FMA instructions
-3. **Adaptive Thresholding**: Could benefit from SIMD optimization for local mean/gaussian calculations
-4. **Hough Transform**: Accumulator updates and voting could benefit from AVX-512
+3. **Hough Transform**: Accumulator updates and voting could benefit from AVX-512
 
 ## Build Notes
 - Use `make -j$(nproc) opencv_imgproc` to build just the imgproc module
