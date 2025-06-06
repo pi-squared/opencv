@@ -96,6 +96,65 @@ static void
 findLocalMaximums( int numrho, int numangle, int threshold,
                    const int *accum, std::vector<int>& sort_buf )
 {
+#if CV_SIMD
+    // SIMD optimized local maximum detection
+    const int vecsize = VTraits<v_int32>::vlanes();
+    v_int32 v_threshold = vx_setall<v_int32>(threshold);
+    
+    for(int n = 0; n < numangle; n++ )
+    {
+        int r = 0;
+        int row_offset = (n+1) * (numrho+2) + 1;
+        
+        // Process multiple rho values in parallel
+        for(; r <= numrho - vecsize; r += vecsize )
+        {
+            int base = row_offset + r;
+            
+            // Load current values
+            v_int32 v_curr = vx_load(accum + base);
+            
+            // Check threshold condition
+            v_int32 v_thresh_mask = v_gt(v_curr, v_threshold);
+            
+            if (v_check_any(v_thresh_mask))
+            {
+                // Load neighbor values
+                v_int32 v_left = vx_load(accum + base - 1);
+                v_int32 v_right = vx_load(accum + base + 1);
+                v_int32 v_top = vx_load(accum + base - numrho - 2);
+                v_int32 v_bottom = vx_load(accum + base + numrho + 2);
+                
+                // Check all conditions
+                v_int32 v_mask = v_and(v_thresh_mask, v_gt(v_curr, v_left));
+                v_mask = v_and(v_mask, v_ge(v_curr, v_right));
+                v_mask = v_and(v_mask, v_gt(v_curr, v_top));
+                v_mask = v_and(v_mask, v_ge(v_curr, v_bottom));
+                
+                // Extract and store results
+                for(int i = 0; i < vecsize && r + i < numrho; i++)
+                {
+                    if (v_extract_n<0>(v_mask) != 0)
+                    {
+                        sort_buf.push_back(base + i);
+                    }
+                    v_mask = v_rotate_right<1>(v_mask);
+                }
+            }
+        }
+        
+        // Process remaining elements
+        for(; r < numrho; r++ )
+        {
+            int base = row_offset + r;
+            if( accum[base] > threshold &&
+                accum[base] > accum[base - 1] && accum[base] >= accum[base + 1] &&
+                accum[base] > accum[base - numrho - 2] && accum[base] >= accum[base + numrho + 2] )
+                sort_buf.push_back(base);
+        }
+    }
+#else
+    // Original scalar implementation
     for(int r = 0; r < numrho; r++ )
         for(int n = 0; n < numangle; n++ )
         {
@@ -105,6 +164,7 @@ findLocalMaximums( int numrho, int numangle, int threshold,
                 accum[base] > accum[base - numrho - 2] && accum[base] >= accum[base + numrho + 2] )
                 sort_buf.push_back(base);
         }
+#endif
 }
 
 /*
@@ -197,6 +257,142 @@ HoughLinesStandard( InputArray src, OutputArray lines, int type,
                      }
              }
     } else {
+#if CV_SIMD
+        // SIMD optimized accumulator update
+        const int vecsize = VTraits<v_float32>::vlanes();
+        const int numrho_offset = (numrho - 1) / 2;
+        
+        for( i = 0; i < height; i++ )
+        {
+            const uchar* row = image + i * step;
+            float y_float = (float)i;
+            
+            // Process pixels in chunks using SIMD
+            j = 0;
+            for( ; j <= width - vecsize; j += vecsize )
+            {
+                // Load pixels and check if any are non-zero
+                v_uint8 pixels8 = vx_load(row + j);
+                v_uint16 pixels16_0, pixels16_1;
+                v_expand(pixels8, pixels16_0, pixels16_1);
+                
+                v_uint32 pixels32_0, pixels32_1, pixels32_2, pixels32_3;
+                v_expand(pixels16_0, pixels32_0, pixels32_1);
+                v_expand(pixels16_1, pixels32_2, pixels32_3);
+                
+                // Check if any pixels are non-zero
+                v_uint32 nonzero_mask = v_ne(pixels32_0, vx_setzero<v_uint32>());
+                if (v_check_any(nonzero_mask))
+                {
+                    // Process first quarter of pixels
+                    for (int k = 0; k < VTraits<v_uint32>::vlanes(); k++)
+                    {
+                        if (row[j + k] != 0)
+                        {
+                            float x_float = (float)(j + k);
+                            // Process angles in groups for better cache usage
+                            for(int n = 0; n < numangle; n += 4)
+                            {
+                                int n_end = std::min(n + 4, numangle);
+                                for(int nn = n; nn < n_end; nn++)
+                                {
+                                    int r = cvRound(x_float * tabCos[nn] + y_float * tabSin[nn]);
+                                    r += numrho_offset;
+                                    accum[(nn + 1) * (numrho + 2) + r + 1]++;
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Check second quarter
+                nonzero_mask = v_ne(pixels32_1, vx_setzero<v_uint32>());
+                if (v_check_any(nonzero_mask))
+                {
+                    for (int k = VTraits<v_uint32>::vlanes(); k < 2 * VTraits<v_uint32>::vlanes(); k++)
+                    {
+                        if (row[j + k] != 0)
+                        {
+                            float x_float = (float)(j + k);
+                            for(int n = 0; n < numangle; n += 4)
+                            {
+                                int n_end = std::min(n + 4, numangle);
+                                for(int nn = n; nn < n_end; nn++)
+                                {
+                                    int r = cvRound(x_float * tabCos[nn] + y_float * tabSin[nn]);
+                                    r += numrho_offset;
+                                    accum[(nn + 1) * (numrho + 2) + r + 1]++;
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Similar processing for pixels32_2 and pixels32_3 if vecsize > 8
+                if (vecsize > 8)
+                {
+                    nonzero_mask = v_ne(pixels32_2, vx_setzero<v_uint32>());
+                    if (v_check_any(nonzero_mask))
+                    {
+                        for (int k = 2 * VTraits<v_uint32>::vlanes(); k < 3 * VTraits<v_uint32>::vlanes() && j + k < width; k++)
+                        {
+                            if (row[j + k] != 0)
+                            {
+                                float x_float = (float)(j + k);
+                                for(int n = 0; n < numangle; n += 4)
+                                {
+                                    int n_end = std::min(n + 4, numangle);
+                                    for(int nn = n; nn < n_end; nn++)
+                                    {
+                                        int r = cvRound(x_float * tabCos[nn] + y_float * tabSin[nn]);
+                                        r += numrho_offset;
+                                        accum[(nn + 1) * (numrho + 2) + r + 1]++;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    nonzero_mask = v_ne(pixels32_3, vx_setzero<v_uint32>());
+                    if (v_check_any(nonzero_mask))
+                    {
+                        for (int k = 3 * VTraits<v_uint32>::vlanes(); k < vecsize && j + k < width; k++)
+                        {
+                            if (row[j + k] != 0)
+                            {
+                                float x_float = (float)(j + k);
+                                for(int n = 0; n < numangle; n += 4)
+                                {
+                                    int n_end = std::min(n + 4, numangle);
+                                    for(int nn = n; nn < n_end; nn++)
+                                    {
+                                        int r = cvRound(x_float * tabCos[nn] + y_float * tabSin[nn]);
+                                        r += numrho_offset;
+                                        accum[(nn + 1) * (numrho + 2) + r + 1]++;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Process remaining pixels
+            for( ; j < width; j++ )
+            {
+                if( row[j] != 0 )
+                {
+                    for(int n = 0; n < numangle; n++ )
+                    {
+                        int r = cvRound( j * tabCos[n] + i * tabSin[n] );
+                        r += numrho_offset;
+                        accum[(n + 1) * (numrho + 2) + r + 1]++;
+                    }
+                }
+            }
+        }
+#else
+        // Fallback to scalar implementation
         for( i = 0; i < height; i++ )
             for( j = 0; j < width; j++ )
             {
@@ -208,6 +404,7 @@ HoughLinesStandard( InputArray src, OutputArray lines, int type,
                         accum[(n + 1) * (numrho + 2) + r + 1]++;
                     }
             }
+#endif
      }
 
     // stage 2. find local maximums
@@ -1230,6 +1427,45 @@ _next_step:
                     x1 = x0 + minRadius * sx;
                     y1 = y0 + minRadius * sy;
 
+#if CV_SIMD
+                    // SIMD optimized radius iteration with prefetching
+                    int r = minRadius;
+                    const int prefetch_distance = 4;
+                    
+                    // Prefetch initial accumulator locations
+                    for(int pf = 0; pf < prefetch_distance && r + pf <= maxRadius; pf++)
+                    {
+                        int x_pf = (x1 + pf * sx) >> 10;
+                        int y_pf = (y1 + pf * sy) >> 10;
+                        if((unsigned)x_pf < (unsigned)acols && (unsigned)y_pf < (unsigned)arows)
+                        {
+                            CV_PREFETCH_READ(adataLocal + y_pf * astep + x_pf);
+                        }
+                    }
+                    
+                    // Process radii with prefetching
+                    for(; r <= maxRadius; x1 += sx, y1 += sy, r++ )
+                    {
+                        int x2 = x1 >> 10, y2 = y1 >> 10;
+                        if( (unsigned)x2 >= (unsigned)acols ||
+                            (unsigned)y2 >= (unsigned)arows )
+                            break;
+
+                        // Prefetch future location
+                        if(r + prefetch_distance <= maxRadius)
+                        {
+                            int x_pf = (x1 + prefetch_distance * sx) >> 10;
+                            int y_pf = (y1 + prefetch_distance * sy) >> 10;
+                            if((unsigned)x_pf < (unsigned)acols && (unsigned)y_pf < (unsigned)arows)
+                            {
+                                CV_PREFETCH_READ(adataLocal + y_pf * astep + x_pf);
+                            }
+                        }
+
+                        adataLocal[y2*astep + x2]++;
+                    }
+#else
+                    // Original scalar implementation
                     for(int r = minRadius; r <= maxRadius; x1 += sx, y1 += sy, r++ )
                     {
                         int x2 = x1 >> 10, y2 = y1 >> 10;
@@ -1239,6 +1475,7 @@ _next_step:
 
                         adataLocal[y2*astep + x2]++;
                     }
+#endif
 
                     sx = -sx; sy = -sy;
                 }

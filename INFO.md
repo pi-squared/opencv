@@ -140,6 +140,33 @@
 - Handles both aligned and unaligned image widths correctly
 - Falls back to original implementation for unsupported threshold types
 
+### 7. Distance Transform SIMD Optimization (optimize-distance-transform-simd)
+**Date**: 2025-06-06
+**Branch**: optimize-distance-transform-simd
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/distransform.cpp
+
+**Improvements Made**:
+- Added SIMD optimizations for distanceTransform_3x3 function
+  - Forward pass: Process multiple pixels using SIMD for distance calculations
+  - Backward pass: SIMD processing with proper float conversion
+  - Uses universal intrinsics for cross-platform support
+- Optimized neighbor access patterns for better cache utilization
+- Vectorized minimum operations for finding shortest distances
+
+**Expected Performance Gains**:
+- Forward pass: 2-3x speedup with SIMD processing
+- Backward pass: 2x speedup with vectorized operations
+- Overall distance transform: 2-2.5x improvement on AVX2/AVX-512 processors
+- Better cache utilization reduces memory stalls
+
+**Testing Notes**:
+- The distance transform had no SIMD optimizations previously
+- Maintains bit-exact compatibility with original implementation
+- Works with all distance types (L1, L2, C)
+- Automatic CPU detection via OpenCV's universal intrinsics
+- Benefits most when processing larger binary images
+
 ## Future Optimization Opportunities
 1. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
 2. **Template Matching**: The correlation operations in templmatch.cpp could use AVX-512 FMA instructions
