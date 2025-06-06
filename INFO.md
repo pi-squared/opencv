@@ -63,12 +63,38 @@
 - Test data (opencv_extra) needs to be properly set up for running tests
 - AVX-512 specific optimizations require runtime CPU detection (already handled by OpenCV's dispatch system)
 - Bilateral grid has overhead that makes it slower for small kernels
+- Median blur AVX-512 benefits are limited to larger kernel sizes
+
+### 4. Canny Edge Detection AVX-512 Optimization (optimize-canny-avx512)
+**Date**: 2025-06-06
+**Branch**: optimize-canny-avx512
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/canny.cpp
+
+**Improvements Made**:
+- Added AVX-512 optimizations for gradient magnitude calculation (both L1 and L2 norms)
+- Process 32 values at once for gradient calculation (32 x int16 -> 32 x int32)
+- Optimized non-maximum suppression with AVX-512 masked operations
+- Enhanced final pass with 64-byte SIMD processing for edge map generation
+- Better utilization of 512-bit registers for wider data parallelism
+
+**Expected Performance Gains**:
+- Gradient calculation: 2-3x speedup with AVX-512
+- Non-maximum suppression: 1.5-2x speedup with better branch prediction
+- Final pass: 2x speedup processing 64 pixels at once
+- Overall Canny performance: 1.5-2.5x improvement on AVX-512 capable processors
+
+**Testing Notes**:
+- Maintains bit-exact compatibility with original implementation
+- Automatic CPU detection via OpenCV's dispatch system
+- Benefits most when processing larger images
+- The optimization is transparent to users - same API
 
 ## Future Optimization Opportunities
-1. **Median Blur AVX-512**: The median blur implementation could benefit from AVX-512 histogram operations
-2. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
-3. **Template Matching**: The correlation operations in templmatch.cpp could use AVX-512 FMA instructions
-4. **Adaptive Thresholding**: Could benefit from SIMD optimization for local mean/gaussian calculations
+1. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
+2. **Template Matching**: The correlation operations in templmatch.cpp could use AVX-512 FMA instructions
+3. **Adaptive Thresholding**: Could benefit from SIMD optimization for local mean/gaussian calculations
+4. **Hough Transform**: Accumulator updates and voting could benefit from AVX-512
 
 ## Build Notes
 - Use `make -j$(nproc) opencv_imgproc` to build just the imgproc module
