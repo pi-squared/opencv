@@ -50,6 +50,7 @@
 
 #include "bilateral_filter.simd.hpp"
 #include "bilateral_filter.simd_declarations.hpp" // defines CV_CPU_DISPATCH_MODES_ALL=AVX2,...,BASELINE based on CMakeLists.txt content
+#include "bilateral_grid.hpp"
 
 /****************************************************************************************\
                                    Bilateral Filtering
@@ -432,6 +433,17 @@ void bilateralFilter( InputArray _src, OutputArray _dst, int d,
              src.channels(), d, sigmaColor, sigmaSpace, borderType);
 
     CV_IPP_RUN_FAST(ipp_bilateralFilter(src, dst, d, sigmaColor, sigmaSpace, borderType));
+
+    // Use bilateral grid method for larger sigma values where it's more efficient
+    // The grid method is particularly effective when spatial kernel is large
+    bool useGrid = (sigmaSpace > 10.0 && d > 15) || (d > 25);
+    
+    if (useGrid && (borderType == BORDER_CONSTANT || borderType == BORDER_REPLICATE))
+    {
+        // Try bilateral grid optimization
+        if (bilateralFilterGrid(src, dst, static_cast<float>(sigmaSpace), static_cast<float>(sigmaColor)))
+            return;
+    }
 
     if( src.depth() == CV_8U )
         bilateralFilter_8u( src, dst, d, sigmaColor, sigmaSpace, borderType );
