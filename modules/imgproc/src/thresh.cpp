@@ -1960,13 +1960,58 @@ void cv::adaptiveThreshold( InputArray _src, OutputArray _dst, double maxValue,
         size.height = 1;
     }
 
+#if CV_SIMD
+    const int simd_width = v_uint8::nlanes;
+    const v_uint8 v_255 = vx_setall_u8(255);
+    const v_int16 v_idelta = vx_setall_s16((short)(-idelta));
+    const v_uint8 v_imaxval = vx_setall_u8(imaxval);
+#endif
+
     for( i = 0; i < size.height; i++ )
     {
         const uchar* sdata = src.ptr(i);
         const uchar* mdata = mean.ptr(i);
         uchar* ddata = dst.ptr(i);
+        
+        j = 0;
+        
+#if CV_SIMD
+        // Process pixels using SIMD when possible
+        for( ; j <= size.width - simd_width; j += simd_width )
+        {
+            v_uint8 v_src = vx_load(sdata + j);
+            v_uint8 v_mean = vx_load(mdata + j);
+            
+            // Calculate src - mean for comparison
+            // Split into two 16-bit vectors to handle signed arithmetic
+            v_uint16 v_src_0, v_src_1, v_mean_0, v_mean_1;
+            v_expand(v_src, v_src_0, v_src_1);
+            v_expand(v_mean, v_mean_0, v_mean_1);
+            
+            v_int16 v_diff_0 = v_reinterpret_as_s16(v_src_0) - v_reinterpret_as_s16(v_mean_0);
+            v_int16 v_diff_1 = v_reinterpret_as_s16(v_src_1) - v_reinterpret_as_s16(v_mean_1);
+            
+            // Compare with -idelta
+            v_uint8 v_result;
+            if( type == cv::THRESH_BINARY )
+            {
+                v_uint16 v_cmp_0 = v_reinterpret_as_u16(v_diff_0 > v_idelta);
+                v_uint16 v_cmp_1 = v_reinterpret_as_u16(v_diff_1 > v_idelta);
+                v_result = v_pack(v_cmp_0, v_cmp_1) & v_imaxval;
+            }
+            else // THRESH_BINARY_INV
+            {
+                v_uint16 v_cmp_0 = v_reinterpret_as_u16(v_diff_0 <= v_idelta);
+                v_uint16 v_cmp_1 = v_reinterpret_as_u16(v_diff_1 <= v_idelta);
+                v_result = v_pack(v_cmp_0, v_cmp_1) & v_imaxval;
+            }
+            
+            v_store(ddata + j, v_result);
+        }
+#endif
 
-        for( j = 0; j < size.width; j++ )
+        // Process remaining pixels
+        for( ; j < size.width; j++ )
             ddata[j] = tab[sdata[j] - mdata[j] + 255];
     }
 }

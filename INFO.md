@@ -56,6 +56,7 @@
 - Cache prefetching on supported platforms
 - Bilateral grid algorithm for large kernel optimizations
 - AVX-512 optimizations with proper CPU detection
+- Template matching normalization with AVX-512 vectorization
 - Maintaining algorithmic correctness while improving performance
 
 ## What Doesn't Work / Challenges
@@ -64,11 +65,61 @@
 - AVX-512 specific optimizations require runtime CPU detection (already handled by OpenCV's dispatch system)
 - Bilateral grid has overhead that makes it slower for small kernels
 
+### 3. Template Matching AVX-512 Optimization (optimize-templmatch-avx512)
+**Date**: 2025-06-06
+**Branch**: optimize-templmatch-avx512
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/templmatch.cpp
+
+**Improvements Made**:
+- Added AVX-512 optimized version of common_matchTemplate function
+- Vectorized the normalization loops using v_float64x8 SIMD intrinsics
+- Process 8 double-precision values simultaneously with AVX-512
+- Optimized integral image access patterns for better cache utilization
+- Automatic CPU dispatch between AVX-512 and scalar implementations
+
+**Expected Performance Gains**:
+- ~2-4x speedup on template normalization for single-channel images
+- ~1.5-2x speedup for normalized correlation methods (TM_CCORR_NORMED, TM_CCOEFF_NORMED, TM_SQDIFF_NORMED)
+- Better performance scaling with larger images due to improved cache usage
+- Maintains bit-exact results compared to scalar implementation
+
+**Testing Notes**:
+- Created test program test_templmatch_avx512.cpp for performance validation
+- The optimization targets the normalization phase which is compute-intensive
+- Multi-channel images fall back to scalar code (optimization opportunity for future)
+- Works seamlessly with OpenCV's CPU dispatch system
+
+### 4. Median Blur AVX-512 Optimization (optimize-medianblur-avx512)
+**Date**: 2025-06-06
+**Branch**: optimize-medianblur-avx512  
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/median_blur.simd.hpp
+
+**Improvements Made**:
+- Added AVX-512 (512-bit vector) optimizations to medianBlur_8u_O1 function
+- Extended existing SIMD code paths to include CV_SIMD512 conditionals
+- Optimized histogram operations using v512_load/store/add/sub/mul_wrap intrinsics
+- Processes 32 x 16-bit histogram values simultaneously (vs 16 for AVX2)
+- Applied optimization to both coarse and fine histogram tiers
+
+**Expected Performance Gains**:
+- ~30-50% speedup on AVX-512 capable processors for large kernels (>15x15)
+- Better memory bandwidth utilization with wider vectors
+- Maintains bit-exact compatibility with scalar implementation
+- Performance gains scale with image size and kernel size
+
+**Testing Notes**:
+- The optimization leverages OpenCV's existing CPU dispatch infrastructure
+- Works seamlessly with runtime CPU detection (AVX512_SKX)
+- Falls back to AVX2/SSE implementations on older processors
+- Build system already configured for AVX-512 dispatch in CMakeLists.txt
+
 ## Future Optimization Opportunities
-1. **Median Blur AVX-512**: The median blur implementation could benefit from AVX-512 histogram operations
-2. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
-3. **Template Matching**: The correlation operations in templmatch.cpp could use AVX-512 FMA instructions
-4. **Adaptive Thresholding**: Could benefit from SIMD optimization for local mean/gaussian calculations
+1. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
+2. **Template Matching Multi-Channel**: Extend AVX-512 optimization to handle multi-channel images
+3. **Adaptive Thresholding**: Could benefit from SIMD optimization for local mean/gaussian calculations
+4. **Histogram-based operations**: Apply similar AVX-512 optimizations to equalizeHist and other histogram-based functions
 
 ## Build Notes
 - Use `make -j$(nproc) opencv_imgproc` to build just the imgproc module
