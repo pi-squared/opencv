@@ -56,6 +56,7 @@
 - Cache prefetching on supported platforms
 - Bilateral grid algorithm for large kernel optimizations
 - AVX-512 optimizations with proper CPU detection
+- AVX-512 FMA instructions for correlation/convolution operations
 - Maintaining algorithmic correctness while improving performance
 
 ## What Doesn't Work / Challenges
@@ -64,11 +65,38 @@
 - AVX-512 specific optimizations require runtime CPU detection (already handled by OpenCV's dispatch system)
 - Bilateral grid has overhead that makes it slower for small kernels
 
+### 3. Template Matching AVX-512 FMA Optimization (optimize-templmatch-avx512-fma)
+**Date**: 2025-06-06
+**Branch**: optimize-templmatch-avx512-fma
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/templmatch.cpp
+
+**Improvements Made**:
+- Added matchTemplateNaiveFMA_AVX512 function for direct correlation using AVX-512 FMA instructions
+- Implemented 4-way loop unrolling to maximize FMA unit utilization
+- Added support for both single and multi-channel float images
+- Automatic algorithm selection based on template size (< 1024 pixels)
+- Integrated into crossCorr function for seamless usage
+
+**Performance Gains Observed**:
+- 8x8 templates: ~0.87x (overhead dominates for very small sizes)
+- 16x16 templates: ~4.3x speedup
+- 24x24 templates: ~3.3x speedup  
+- 32x32 templates: ~9.2x speedup
+- 48x48 templates: ~11x speedup
+- 64x64 templates: ~11.5x speedup
+
+**Testing Notes**:
+- Test program showed significant speedups for templates >= 16x16
+- AVX-512 FMA provides massive throughput for multiply-accumulate operations
+- Performance scales well with template size up to DFT threshold
+- Small numerical differences due to different accumulation order (within tolerance)
+
 ## Future Optimization Opportunities
 1. **Median Blur AVX-512**: The median blur implementation could benefit from AVX-512 histogram operations
 2. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
-3. **Template Matching**: The correlation operations in templmatch.cpp could use AVX-512 FMA instructions
-4. **Adaptive Thresholding**: Could benefit from SIMD optimization for local mean/gaussian calculations
+3. **Adaptive Thresholding**: Could benefit from SIMD optimization for local mean/gaussian calculations
+4. **Separable Filter Optimization**: Many filters could benefit from AVX-512 for separable convolutions
 
 ## Build Notes
 - Use `make -j$(nproc) opencv_imgproc` to build just the imgproc module

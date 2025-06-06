@@ -179,7 +179,15 @@ medianBlur_8u_O1( const Mat& _src, Mat& _dst, int ksize )
                 // First column initialization
                 for (k = 0; k < 16; ++k)
                 {
-#if CV_SIMD256
+#if CV_SIMD512 && CV_SIMD_WIDTH == 64
+                    // AVX-512 optimization: process all 16 values in one operation
+                    v_uint16x32 v_fine_512 = vx_load(h_fine + 16 * n * (16 * c + k));
+                    v_uint16x32 v_multiplier = vx_setall<ushort>(2 * r + 1);
+                    v_uint16x32 v_existing = vx_load(H.fine[k]);
+                    v_fine_512 = v_mul_wrap(v_fine_512, v_multiplier);
+                    v_fine_512 = v_add(v_fine_512, v_existing);
+                    v_store(H.fine[k], v_fine_512);
+#elif CV_SIMD256
                     v_store(H.fine[k], v_mul_wrap(v256_load(h_fine + 16 * n*(16 * c + k)), v_add(v256_setall_u16(2 * r + 1), v256_load(H.fine[k]))));
 #elif CV_SIMD128
                     v_store(H.fine[k], v_add(v_mul_wrap(v_load(h_fine + 16 * n * (16 * c + k)), v_setall_u16((ushort)(2 * r + 1))), v_load(H.fine[k])));
@@ -190,7 +198,9 @@ medianBlur_8u_O1( const Mat& _src, Mat& _dst, int ksize )
 #endif
                 }
 
-#if CV_SIMD256
+#if CV_SIMD512 && CV_SIMD_WIDTH == 64
+                v_uint16x32 v_coarse = vx_load(H.coarse);
+#elif CV_SIMD256
                 v_uint16x16 v_coarse = v256_load(H.coarse);
 #elif CV_SIMD128
                 v_uint16x8 v_coarsel = v_load(H.coarse);
@@ -199,7 +209,9 @@ medianBlur_8u_O1( const Mat& _src, Mat& _dst, int ksize )
                 HT* px = h_coarse + 16 * n*c;
                 for( j = 0; j < 2*r; ++j, px += 16 )
                 {
-#if CV_SIMD256
+#if CV_SIMD512 && CV_SIMD_WIDTH == 64
+                    v_coarse = v_add(v_coarse, vx_load(px));
+#elif CV_SIMD256
                     v_coarse = v_add(v_coarse, v256_load(px));
 #elif CV_SIMD128
                     v_coarsel = v_add(v_coarsel, v_load(px));
@@ -216,7 +228,10 @@ medianBlur_8u_O1( const Mat& _src, Mat& _dst, int ksize )
                     HT* segment;
 
                     px = h_coarse + 16 * (n*c + std::min(j + r, n - 1));
-#if CV_SIMD256
+#if CV_SIMD512 && CV_SIMD_WIDTH == 64
+                    v_coarse = v_add(v_coarse, vx_load(px));
+                    v_store(H.coarse, v_coarse);
+#elif CV_SIMD256
                     v_coarse = v_add(v_coarse, v256_load(px));
                     v_store(H.coarse, v_coarse);
 #elif CV_SIMD128
@@ -242,7 +257,9 @@ medianBlur_8u_O1( const Mat& _src, Mat& _dst, int ksize )
                     CV_Assert( k < 16 );
 
                     /* Update corresponding histogram segment */
-#if CV_SIMD256
+#if CV_SIMD512 && CV_SIMD_WIDTH == 64
+                    v_uint16x32 v_fine;
+#elif CV_SIMD256
                     v_uint16x16 v_fine;
 #elif CV_SIMD128
                     v_uint16x8 v_finel;
@@ -250,7 +267,9 @@ medianBlur_8u_O1( const Mat& _src, Mat& _dst, int ksize )
 #endif
                     if ( luc[k] <= j-r )
                     {
-#if CV_SIMD256
+#if CV_SIMD512 && CV_SIMD_WIDTH == 64
+                        v_fine = vx_setzero<v_uint16x32>();
+#elif CV_SIMD256
                         v_fine = v256_setzero_u16();
 #elif CV_SIMD128
                         v_finel = v_setzero_u16();
@@ -261,7 +280,9 @@ medianBlur_8u_O1( const Mat& _src, Mat& _dst, int ksize )
                         px = h_fine + 16 * (n*(16 * c + k) + j - r);
                         for (luc[k] = HT(j - r); luc[k] < MIN(j + r + 1, n); ++luc[k], px += 16)
                         {
-#if CV_SIMD256
+#if CV_SIMD512 && CV_SIMD_WIDTH == 64
+                            v_fine = v_add(v_fine, vx_load(px));
+#elif CV_SIMD256
                             v_fine = v_add(v_fine, v256_load(px));
 #elif CV_SIMD128
                             v_finel = v_add(v_finel, v_load(px));
@@ -275,7 +296,9 @@ medianBlur_8u_O1( const Mat& _src, Mat& _dst, int ksize )
                         if ( luc[k] < j+r+1 )
                         {
                             px = h_fine + 16 * (n*(16 * c + k) + (n - 1));
-#if CV_SIMD256
+#if CV_SIMD512 && CV_SIMD_WIDTH == 64
+                            v_fine = v_add(v_fine, v_mul_wrap(vx_load(px), vx_setall<ushort>(j + r + 1 - n)));
+#elif CV_SIMD256
                             v_fine = v_add(v_fine, v_mul_wrap(v256_load(px), v256_setall_u16(j + r + 1 - n)));
 #elif CV_SIMD128
                             v_finel = v_add(v_finel, v_mul_wrap(v_load(px), v_setall_u16((ushort)(j + r + 1 - n))));
@@ -289,7 +312,9 @@ medianBlur_8u_O1( const Mat& _src, Mat& _dst, int ksize )
                     }
                     else
                     {
-#if CV_SIMD256
+#if CV_SIMD512 && CV_SIMD_WIDTH == 64
+                        v_fine = vx_load(H.fine[k]);
+#elif CV_SIMD256
                         v_fine = v256_load(H.fine[k]);
 #elif CV_SIMD128
                         v_finel = v_load(H.fine[k]);
@@ -298,7 +323,9 @@ medianBlur_8u_O1( const Mat& _src, Mat& _dst, int ksize )
                         px = h_fine + 16*n*(16 * c + k);
                         for ( ; luc[k] < j+r+1; ++luc[k] )
                         {
-#if CV_SIMD256
+#if CV_SIMD512 && CV_SIMD_WIDTH == 64
+                            v_fine = v_sub(v_add(v_fine, vx_load(px + 16 * MIN(luc[k], n - 1))), vx_load(px + 16 * MAX(luc[k] - 2 * r - 1, 0)));
+#elif CV_SIMD256
                             v_fine = v_sub(v_add(v_fine, v256_load(px + 16 * MIN(luc[k], n - 1))), v256_load(px + 16 * MAX(luc[k] - 2 * r - 1, 0)));
 #elif CV_SIMD128
                             v_finel = v_sub(v_add(v_finel, v_load(px + 16 * MIN(luc[k], n - 1)    )), v_load(px + 16 * MAX(luc[k] - 2 * r - 1, 0)));
@@ -311,7 +338,10 @@ medianBlur_8u_O1( const Mat& _src, Mat& _dst, int ksize )
                     }
 
                     px = h_coarse + 16 * (n*c + MAX(j - r, 0));
-#if CV_SIMD256
+#if CV_SIMD512 && CV_SIMD_WIDTH == 64
+                    v_store(H.fine[k], v_fine);
+                    v_coarse = v_sub(v_coarse, vx_load(px));
+#elif CV_SIMD256
                     v_store(H.fine[k], v_fine);
                     v_coarse = v_sub(v_coarse, v256_load(px));
 #elif CV_SIMD128
