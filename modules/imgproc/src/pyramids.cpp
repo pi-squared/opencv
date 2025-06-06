@@ -44,6 +44,9 @@
 #include "precomp.hpp"
 #include "opencl_kernels_imgproc.hpp"
 #include "opencv2/core/hal/intrin.hpp"
+#if CV_AVX512_SKX
+#include <immintrin.h>
+#endif
 
 namespace cv
 {
@@ -91,6 +94,33 @@ template<> int PyrDownVecH<uchar, int, 1>(const uchar* src, int* row, int width)
 
     v_int16 v_1_4 = v_reinterpret_as_s16(vx_setall_u32(0x00040001));
     v_int16 v_6_4 = v_reinterpret_as_s16(vx_setall_u32(0x00040006));
+    
+#if CV_AVX512_SKX
+    // AVX-512 optimization: process more pixels per iteration
+    // With 512-bit registers, we can process 16 int32 values at once
+    for (; x <= width - 16; x += 16, src01 += 32, src23 += 32, src4 += 32, row += 16)
+    {
+        // Load and expand 16 uchar values to 16 int16 values, then to int32
+        v_uint16 s01_0 = vx_load_expand(src01);
+        v_uint16 s01_1 = vx_load_expand(src01 + 16);
+        v_uint16 s23_0 = vx_load_expand(src23);
+        v_uint16 s23_1 = vx_load_expand(src23 + 16);
+        v_uint16 s4_0 = vx_load_expand(src4);
+        v_uint16 s4_1 = vx_load_expand(src4 + 16);
+        
+        // Process first 8 values
+        v_store(row, v_add(v_add(v_dotprod(v_reinterpret_as_s16(s01_0), v_1_4), 
+                                 v_dotprod(v_reinterpret_as_s16(s23_0), v_6_4)), 
+                          v_shr<16>(v_reinterpret_as_s32(s4_0))));
+        
+        // Process next 8 values
+        v_store(row + VTraits<v_int32>::vlanes(), 
+                v_add(v_add(v_dotprod(v_reinterpret_as_s16(s01_1), v_1_4), 
+                           v_dotprod(v_reinterpret_as_s16(s23_1), v_6_4)), 
+                     v_shr<16>(v_reinterpret_as_s32(s4_1))));
+    }
+#endif
+    
     for (; x <= width - VTraits<v_int32>::vlanes(); x += VTraits<v_int32>::vlanes(), src01 += VTraits<v_int16>::vlanes(), src23 += VTraits<v_int16>::vlanes(), src4 += VTraits<v_int16>::vlanes(), row += VTraits<v_int32>::vlanes())
         v_store(row, v_add(v_add(v_dotprod(v_reinterpret_as_s16(vx_load_expand(src01)), v_1_4), v_dotprod(v_reinterpret_as_s16(vx_load_expand(src23)), v_6_4)), v_shr<16>(v_reinterpret_as_s32(vx_load_expand(src4)))));
     vx_cleanup();
@@ -429,6 +459,35 @@ template<> int PyrDownVecV<int, uchar>(int** src, uchar* dst, int width)
 {
     int x = 0;
     const int *row0 = src[0], *row1 = src[1], *row2 = src[2], *row3 = src[3], *row4 = src[4];
+
+#if CV_AVX512_SKX
+    // AVX-512 optimization: process 64 bytes at once
+    for( ; x <= width - 64; x += 64 )
+    {
+        // Load 64 int32 values from 5 rows and apply Gaussian kernel
+        // Process in 4 chunks of 16 values
+        for (int i = 0; i < 4; i++)
+        {
+            v_int32x16 r0 = v512_load(row0 + x + i*16);
+            v_int32x16 r1 = v512_load(row1 + x + i*16);
+            v_int32x16 r2 = v512_load(row2 + x + i*16);
+            v_int32x16 r3 = v512_load(row3 + x + i*16);
+            v_int32x16 r4 = v512_load(row4 + x + i*16);
+            
+            // Apply kernel: (r0 + r4) + 2*r2 + 4*(r1 + r3 + r2)
+            v_int32x16 t = v_add(v_add(v_add(r0, r4), v_add(r2, r2)), 
+                                v_shl<2>(v_add(v_add(r1, r3), r2)));
+            
+            // Store intermediate results - will be packed later
+            v512_store_aligned(row0 + x + i*16, t); // Temporarily reuse row0 for storage
+        }
+        
+        // Pack results from int32 to uint8
+        v_uint16 p0 = v_reinterpret_as_u16(v_pack(v512_load(row0 + x), v512_load(row0 + x + 16)));
+        v_uint16 p1 = v_reinterpret_as_u16(v_pack(v512_load(row0 + x + 32), v512_load(row0 + x + 48)));
+        v_store(dst + x, v_rshr_pack<8>(p0, p1));
+    }
+#endif
 
     for( ; x <= width - VTraits<v_uint8>::vlanes(); x += VTraits<v_uint8>::vlanes() )
     {
@@ -911,7 +970,13 @@ pyrDown_( const Mat& _src, Mat& _dst, int borderType )
     int *tabLPtr = tabL;
     int *tabRPtr = tabR;
 
+#if CV_AVX512_SKX
+    // For AVX-512, use more threads to better utilize wider SIMD
+    int numThreads = std::min(cv::getNumThreads() * 2, (int)dsize.height);
+    cv::parallel_for_(Range(0,dsize.height), cv::PyrDownInvoker<CastOp>(_src, _dst, borderType, &tabRPtr, &tabM, &tabLPtr), numThreads);
+#else
     cv::parallel_for_(Range(0,dsize.height), cv::PyrDownInvoker<CastOp>(_src, _dst, borderType, &tabRPtr, &tabM, &tabLPtr), cv::getNumThreads());
+#endif
 }
 
 template<class CastOp>
@@ -961,6 +1026,14 @@ void PyrDownInvoker<CastOp>::operator()(const Range& range) const
 
                 if( cn == 1 )
                 {
+#if CV_AVX512_SKX
+                    // Prefetch next row data for better cache utilization
+                    if (sy + 1 <= sy_limit) {
+                        const T* nextSrc = _src->ptr<T>(borderInterpolate(sy + 1, ssize.height, _borderType));
+                        _mm_prefetch((const char*)(nextSrc + x * 2 - 2), _MM_HINT_T0);
+                        _mm_prefetch((const char*)(nextSrc + x * 2 + 62), _MM_HINT_T0);
+                    }
+#endif
                     x += PyrDownVecH<T, WT, 1>(src + x * 2 - 2, row + x, width0 - x);
                     for( ; x < width0; x++ )
                         row[x] = src[x*2]*6 + (src[x*2 - 1] + src[x*2 + 1])*4 +
