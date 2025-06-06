@@ -41,6 +41,7 @@
 
 #include "precomp.hpp"
 #include "opencl_kernels_imgproc.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 ////////////////////////////////////////////////// matchTemplate //////////////////////////////////////////////////////////
 
@@ -903,6 +904,217 @@ static void matchTemplateMask( InputArray _img, InputArray _templ, OutputArray _
     }
 }
 
+#if CV_SIMD512
+static void common_matchTemplate_AVX512( Mat& img, Mat& templ, Mat& result, int method, int cn )
+{
+    if( method == cv::TM_CCORR )
+        return;
+
+    int numType = method == cv::TM_CCORR || method == cv::TM_CCORR_NORMED ? 0 :
+                  method == cv::TM_CCOEFF || method == cv::TM_CCOEFF_NORMED ? 1 : 2;
+    bool isNormed = method == cv::TM_CCORR_NORMED ||
+                    method == cv::TM_SQDIFF_NORMED ||
+                    method == cv::TM_CCOEFF_NORMED;
+
+    double invArea = 1./((double)templ.rows * templ.cols);
+
+    Mat sum, sqsum;
+    Scalar templMean, templSdv;
+    double *q0 = 0, *q1 = 0, *q2 = 0, *q3 = 0;
+    double templNorm = 0, templSum2 = 0;
+
+    if( method == cv::TM_CCOEFF )
+    {
+        integral(img, sum, CV_64F);
+        templMean = mean(templ);
+    }
+    else
+    {
+        integral(img, sum, sqsum, CV_64F);
+        meanStdDev( templ, templMean, templSdv );
+
+        templNorm = templSdv[0]*templSdv[0] + templSdv[1]*templSdv[1] + templSdv[2]*templSdv[2] + templSdv[3]*templSdv[3];
+
+        if( templNorm < DBL_EPSILON && method == cv::TM_CCOEFF_NORMED )
+        {
+            result = Scalar::all(1);
+            return;
+        }
+
+        templSum2 = templNorm + templMean[0]*templMean[0] + templMean[1]*templMean[1] + templMean[2]*templMean[2] + templMean[3]*templMean[3];
+
+        if( numType != 1 )
+        {
+            templMean = Scalar::all(0);
+            templNorm = templSum2;
+        }
+
+        templSum2 /= invArea;
+        templNorm = std::sqrt(templNorm);
+        templNorm /= std::sqrt(invArea); // care of accuracy here
+
+        CV_Assert(sqsum.data != NULL);
+        q0 = (double*)sqsum.data;
+        q1 = q0 + templ.cols*cn;
+        q2 = (double*)(sqsum.data + templ.rows*sqsum.step);
+        q3 = q2 + templ.cols*cn;
+    }
+
+    CV_Assert(sum.data != NULL);
+    double* p0 = (double*)sum.data;
+    double* p1 = p0 + templ.cols*cn;
+    double* p2 = (double*)(sum.data + templ.rows*sum.step);
+    double* p3 = p2 + templ.cols*cn;
+
+    int sumstep = sum.data ? (int)(sum.step / sizeof(double)) : 0;
+    int sqstep = sqsum.data ? (int)(sqsum.step / sizeof(double)) : 0;
+
+    // AVX-512 SIMD optimization for the main processing loop
+    const int simd_width = v_float64x8::nlanes;
+    v_float64x8 v_invArea = v_setall_f64(invArea);
+    v_float64x8 v_templNorm = v_setall_f64(templNorm);
+    v_float64x8 v_templSum2 = v_setall_f64(templSum2);
+    
+    // Create vectors for template mean values
+    v_float64x8 v_templMean[4];
+    for (int i = 0; i < 4; i++)
+        v_templMean[i] = v_setall_f64(templMean[i]);
+
+    int i, j, k;
+
+    for( i = 0; i < result.rows; i++ )
+    {
+        float* rrow = result.ptr<float>(i);
+        int idx = i * sumstep;
+        int idx2 = i * sqstep;
+
+        // Process multiple columns at once with AVX-512
+        int j_simd = 0;
+        if (cn == 1 && result.cols >= simd_width)
+        {
+            for( ; j_simd <= result.cols - simd_width; j_simd += simd_width )
+            {
+                v_float64x8 v_num;
+                v_float64x8 v_wndMean2 = v_zero<v_float64x8>();
+                v_float64x8 v_wndSum2 = v_zero<v_float64x8>();
+
+                // Load result values - process 8 float values at a time
+                v_float32x8 v_rrow_f32 = v256_load(rrow + j_simd);
+                v_num = v_cvt_f64(v_rrow_f32);
+                
+                // Process low part
+                if( numType == 1 )
+                {
+                    v_float64x8 v_p0 = v_load(p0 + idx + j_simd);
+                    v_float64x8 v_p1 = v_load(p1 + idx + j_simd);
+                    v_float64x8 v_p2 = v_load(p2 + idx + j_simd);
+                    v_float64x8 v_p3 = v_load(p3 + idx + j_simd);
+                    
+                    v_float64x8 v_t = v_sub(v_sub(v_add(v_p0, v_p3), v_p1), v_p2);
+                    v_wndMean2 = v_muladd(v_t, v_t, v_wndMean2);
+                    v_num = v_sub(v_num, v_mul(v_t, v_templMean[0]));
+                    
+                    v_wndMean2 = v_mul(v_wndMean2, v_invArea);
+                }
+                // else v_num already has the loaded values
+
+                if( isNormed || numType == 2 )
+                {
+                    v_float64x8 v_q0 = v_load(q0 + idx2 + j_simd);
+                    v_float64x8 v_q1 = v_load(q1 + idx2 + j_simd);
+                    v_float64x8 v_q2 = v_load(q2 + idx2 + j_simd);
+                    v_float64x8 v_q3 = v_load(q3 + idx2 + j_simd);
+                    
+                    v_wndSum2 = v_sub(v_sub(v_add(v_q0, v_q3), v_q1), v_q2);
+
+                    if( numType == 2 )
+                    {
+                        v_num = v_sub(v_add(v_wndSum2, v_templSum2), v_add(v_num, v_num));
+                        v_num = v_max(v_num, v_zero<v_float64x8>());
+                    }
+                }
+
+                if( isNormed )
+                {
+                    v_float64x8 v_diff2 = v_max(v_sub(v_wndSum2, v_wndMean2), v_zero<v_float64x8>());
+                    v_float64x8 v_t = v_mul(v_sqrt(v_diff2), v_templNorm);
+                    
+                    // Normalization logic
+                    v_float64x8 v_abs_num = v_abs(v_num);
+                    v_float64x8 v_mask1 = v_lt(v_abs_num, v_t);
+                    v_float64x8 v_mask2 = v_lt(v_abs_num, v_mul(v_t, v_setall_f64(1.125)));
+                    
+                    v_float64x8 v_normalized = v_div(v_num, v_t);
+                    v_float64x8 v_sign = v_select(v_lt(v_num, v_zero<v_float64x8>()), v_setall_f64(-1), v_setall_f64(1));
+                    v_float64x8 v_default = (method != cv::TM_SQDIFF_NORMED) ? v_zero<v_float64x8>() : v_setall_f64(1);
+                    
+                    v_num = v_select(v_mask1, v_normalized, v_select(v_mask2, v_sign, v_default));
+                }
+
+                // Store results - convert back from double to float
+                v_float32x8 v_result_f32 = v_cvt_f32(v_num);
+                v_store(rrow + j_simd, v_result_f32);
+            }
+            
+            idx += j_simd * cn;
+            idx2 += j_simd * cn;
+        }
+
+        // Process remaining columns with scalar code
+        for( j = j_simd; j < result.cols; j++, idx += cn, idx2 += cn )
+        {
+            double num = rrow[j], t;
+            double wndMean2 = 0, wndSum2 = 0;
+
+            if( numType == 1 )
+            {
+                for( k = 0; k < cn; k++ )
+                {
+                    t = p0[idx+k] - p1[idx+k] - p2[idx+k] + p3[idx+k];
+                    wndMean2 += t*t;
+                    num -= t*templMean[k];
+                }
+
+                wndMean2 *= invArea;
+            }
+
+            if( isNormed || numType == 2 )
+            {
+                for( k = 0; k < cn; k++ )
+                {
+                    t = q0[idx2+k] - q1[idx2+k] - q2[idx2+k] + q3[idx2+k];
+                    wndSum2 += t;
+                }
+
+                if( numType == 2 )
+                {
+                    num = wndSum2 - 2*num + templSum2;
+                    num = MAX(num, 0.);
+                }
+            }
+
+            if( isNormed )
+            {
+                double diff2 = MAX(wndSum2 - wndMean2, 0);
+                if (diff2 <= std::min(0.5, 10 * FLT_EPSILON * wndSum2))
+                    t = 0; // avoid rounding errors
+                else
+                    t = std::sqrt(diff2)*templNorm;
+
+                if( fabs(num) < t )
+                    num /= t;
+                else if( fabs(num) < t*1.125 )
+                    num = num > 0 ? 1 : -1;
+                else
+                    num = method != cv::TM_SQDIFF_NORMED ? 0 : 1;
+            }
+
+            rrow[j] = (float)num;
+        }
+    }
+}
+#endif
+
 static void common_matchTemplate( Mat& img, Mat& templ, Mat& result, int method, int cn )
 {
     if( method == cv::TM_CCORR )
@@ -1125,7 +1337,11 @@ static bool ipp_matchTemplate( Mat& img, Mat& templ, Mat& result, int method)
     {
         if(ipp_crossCorr(img, templ, result, false))
         {
+#if CV_SIMD512
+            common_matchTemplate_AVX512(img, templ, result, cv::TM_SQDIFF_NORMED, 1);
+#else
             common_matchTemplate(img, templ, result, cv::TM_SQDIFF_NORMED, 1);
+#endif
             return true;
         }
     }
@@ -1143,7 +1359,11 @@ static bool ipp_matchTemplate( Mat& img, Mat& templ, Mat& result, int method)
     {
         if(ipp_crossCorr(img, templ, result, false))
         {
+#if CV_SIMD512
+            common_matchTemplate_AVX512(img, templ, result, method, 1);
+#else
             common_matchTemplate(img, templ, result, method, 1);
+#endif
             return true;
         }
     }
@@ -1190,7 +1410,11 @@ void cv::matchTemplate( InputArray _img, InputArray _templ, OutputArray _result,
 
     crossCorr( img, templ, result, Point(0,0), 0, 0);
 
+#if CV_SIMD512
+    common_matchTemplate_AVX512(img, templ, result, method, cn);
+#else
     common_matchTemplate(img, templ, result, method, cn);
+#endif
 }
 
 CV_IMPL void
