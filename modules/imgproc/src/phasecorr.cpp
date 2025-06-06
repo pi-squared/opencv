@@ -38,6 +38,7 @@
 
 #include "precomp.hpp"
 #include <vector>
+#include "opencv2/core/hal/intrin.hpp"
 
 namespace cv
 {
@@ -106,7 +107,41 @@ static void magSpectrums( InputArray _src, OutputArray _dst)
                     dataDst[j1] = (float)std::abs(dataSrc[j1]);
             }
 
-            for( j = j0; j < j1; j += 2 )
+#if CV_SIMD
+            // SIMD optimization for magnitude calculation
+            // Process multiple complex number pairs at once
+            int j_simd = j0;
+            const int simd_width = v_float32::nlanes;
+            
+            // We need to process simd_width complex pairs, which means 2*simd_width floats
+            // But we store only simd_width results (one magnitude per complex pair)
+            for( ; j_simd + 2*simd_width <= j1; j_simd += 2*simd_width )
+            {
+                // Load interleaved real and imaginary parts
+                v_float32 v_src0 = vx_load(dataSrc + j_simd);
+                v_float32 v_src1 = vx_load(dataSrc + j_simd + simd_width);
+                
+                // Deinterleave to get real and imaginary parts
+                v_float32 v_real, v_imag;
+                v_deinterleave(v_src0, v_src1, v_real, v_imag);
+                
+                // Compute magnitude: sqrt(real^2 + imag^2)
+                v_float32 v_real_sq = v_real * v_real;
+                v_float32 v_imag_sq = v_imag * v_imag;
+                v_float32 v_mag_sq = v_real_sq + v_imag_sq;
+                v_float32 v_mag = v_sqrt(v_mag_sq);
+                
+                // Store results at every other position (where real parts were)
+                // We need to scatter the results
+                for(int i = 0; i < simd_width; i++)
+                {
+                    dataDst[j_simd + 2*i] = v_mag[i];
+                }
+            }
+            j = j_simd;
+#endif
+
+            for( ; j < j1; j += 2 )
             {
                 dataDst[j] = (float)std::sqrt((double)dataSrc[j]*dataSrc[j] + (double)dataSrc[j+1]*dataSrc[j+1]);
             }
@@ -150,7 +185,38 @@ static void magSpectrums( InputArray _src, OutputArray _dst)
                     dataDst[j1] = std::abs(dataSrc[j1]);
             }
 
-            for( j = j0; j < j1; j += 2 )
+#if CV_SIMD_64F
+            // SIMD optimization for double precision magnitude calculation
+            int j_simd = j0;
+            const int simd_width = v_float64::nlanes;
+            
+            // Process simd_width complex pairs at once
+            for( ; j_simd + 2*simd_width <= j1; j_simd += 2*simd_width )
+            {
+                // Load interleaved real and imaginary parts
+                v_float64 v_src0 = vx_load(dataSrc + j_simd);
+                v_float64 v_src1 = vx_load(dataSrc + j_simd + simd_width);
+                
+                // Deinterleave to get real and imaginary parts
+                v_float64 v_real, v_imag;
+                v_deinterleave(v_src0, v_src1, v_real, v_imag);
+                
+                // Compute magnitude: sqrt(real^2 + imag^2)
+                v_float64 v_real_sq = v_real * v_real;
+                v_float64 v_imag_sq = v_imag * v_imag;
+                v_float64 v_mag_sq = v_real_sq + v_imag_sq;
+                v_float64 v_mag = v_sqrt(v_mag_sq);
+                
+                // Store results at every other position
+                for(int i = 0; i < simd_width; i++)
+                {
+                    dataDst[j_simd + 2*i] = v_mag[i];
+                }
+            }
+            j = j_simd;
+#endif
+
+            for( ; j < j1; j += 2 )
             {
                 dataDst[j] = std::sqrt(dataSrc[j]*dataSrc[j] + dataSrc[j+1]*dataSrc[j+1]);
             }
