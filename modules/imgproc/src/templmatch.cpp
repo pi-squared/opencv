@@ -41,6 +41,7 @@
 
 #include "precomp.hpp"
 #include "opencl_kernels_imgproc.hpp"
+#include "templmatch.simd.hpp"
 
 ////////////////////////////////////////////////// matchTemplate //////////////////////////////////////////////////////////
 
@@ -1187,6 +1188,27 @@ void cv::matchTemplate( InputArray _img, InputArray _templ, OutputArray _result,
     Mat result = _result.getMat();
 
     CV_IPP_RUN_FAST(ipp_matchTemplate(img, templ, result, method))
+
+#if CV_SIMD
+    // Use SIMD-optimized direct methods for small templates
+    // FFT has overhead that makes it slower for small templates
+    const int templSize = templ.rows * templ.cols;
+    const int SIMD_THRESHOLD = 50 * 50; // Templates smaller than 50x50 benefit from direct SIMD
+    
+    if (templSize <= SIMD_THRESHOLD && depth == CV_32F)
+    {
+        // Convert to float if needed (already checked that depth is 8U or 32F)
+        Mat img32f = img, templ32f = templ;
+        if (depth == CV_8U)
+        {
+            img.convertTo(img32f, CV_32F);
+            templ.convertTo(templ32f, CV_32F);
+        }
+        
+        hal::matchTemplateNaive_SIMD(img32f, templ32f, result, method);
+        return;
+    }
+#endif
 
     crossCorr( img, templ, result, Point(0,0), 0, 0);
 

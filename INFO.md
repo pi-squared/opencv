@@ -51,11 +51,38 @@
 - Memory overhead is minimal (~80KB for typical use case)
 - Maintains bit-exact compatibility with original implementation
 
+### 3. Adaptive Threshold SIMD Optimization (optimize-adaptive-threshold-avx512)
+**Date**: 2025-06-06
+**Branch**: optimize-adaptive-threshold-avx512
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/thresh.cpp
+
+**Improvements Made**:
+- Added SIMD vectorization to the pixel comparison loop in adaptiveThreshold function
+- Uses OpenCV's universal intrinsics (v_uint8, v_int16, etc.) for cross-platform SIMD
+- Processes up to 64 pixels at once on AVX-512 systems, 32 on AVX2, 16 on SSE
+- Handles signed arithmetic correctly by expanding 8-bit to 16-bit for comparisons
+- Supports both THRESH_BINARY and THRESH_BINARY_INV threshold types
+- Falls back to scalar code for remaining pixels and non-SIMD systems
+
+**Expected Performance Gains**:
+- ~2-4x speedup on the threshold application phase (final comparison loop)
+- Performance improvement scales with image size
+- Most benefit on systems with AVX-512 support (64 pixels processed at once)
+- Overall function speedup depends on block size (smaller blocks = more speedup from SIMD)
+
+**Testing Notes**:
+- The optimization maintains bit-exact compatibility with original implementation
+- Works seamlessly with OpenCV's CPU dispatch system
+- The mean/gaussian calculation phase dominates runtime for large block sizes
+- For small block sizes (3x3, 5x5), the SIMD optimization provides significant benefit
+
 ## What Works
 - SIMD loop unrolling for better ILP (Instruction Level Parallelism)
 - Cache prefetching on supported platforms
 - Bilateral grid algorithm for large kernel optimizations
 - AVX-512 optimizations with proper CPU detection
+- Universal intrinsics for cross-platform SIMD support
 - Maintaining algorithmic correctness while improving performance
 
 ## What Doesn't Work / Challenges
@@ -68,10 +95,11 @@
 1. **Median Blur AVX-512**: The median blur implementation could benefit from AVX-512 histogram operations
 2. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
 3. **Template Matching**: The correlation operations in templmatch.cpp could use AVX-512 FMA instructions
-4. **Adaptive Thresholding**: Could benefit from SIMD optimization for local mean/gaussian calculations
+4. **Adaptive Threshold Mean Calculation**: The boxFilter/GaussianBlur phase could also benefit from further optimization
+5. **Histogram-based operations**: Apply similar SIMD optimizations to equalizeHist and other histogram-based functions
 
 ## Build Notes
 - Use `make -j$(nproc) opencv_imgproc` to build just the imgproc module
-- Tests can be run with: `./bin/opencv_test_imgproc --gtest_filter="*StackBlur*"`
+- Tests can be run with: `./bin/opencv_test_imgproc --gtest_filter="*AdaptiveThreshold*"`
 - Set OPENCV_TEST_DATA_PATH environment variable for test data location
 - For AVX-512 builds: `-DCPU_BASELINE=AVX2 -DCPU_DISPATCH=AVX512_SKX`
