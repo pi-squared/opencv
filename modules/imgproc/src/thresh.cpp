@@ -1966,7 +1966,41 @@ void cv::adaptiveThreshold( InputArray _src, OutputArray _dst, double maxValue,
         const uchar* mdata = mean.ptr(i);
         uchar* ddata = dst.ptr(i);
 
-        for( j = 0; j < size.width; j++ )
+        j = 0;
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+        // SIMD optimization for adaptive threshold
+        // Since we need to do table lookups which are inherently scalar,
+        // we optimize by processing multiple table lookups in an unrolled manner
+        // to improve memory access patterns and reduce loop overhead
+        const int unroll = 8; // Process 8 pixels at a time
+        
+        for( ; j <= size.width - unroll; j += unroll )
+        {
+            
+            // Unrolled table lookups with better instruction-level parallelism
+            uchar t0 = tab[sdata[j + 0] - mdata[j + 0] + 255];
+            uchar t1 = tab[sdata[j + 1] - mdata[j + 1] + 255];
+            uchar t2 = tab[sdata[j + 2] - mdata[j + 2] + 255];
+            uchar t3 = tab[sdata[j + 3] - mdata[j + 3] + 255];
+            uchar t4 = tab[sdata[j + 4] - mdata[j + 4] + 255];
+            uchar t5 = tab[sdata[j + 5] - mdata[j + 5] + 255];
+            uchar t6 = tab[sdata[j + 6] - mdata[j + 6] + 255];
+            uchar t7 = tab[sdata[j + 7] - mdata[j + 7] + 255];
+            
+            // Store results
+            ddata[j + 0] = t0;
+            ddata[j + 1] = t1;
+            ddata[j + 2] = t2;
+            ddata[j + 3] = t3;
+            ddata[j + 4] = t4;
+            ddata[j + 5] = t5;
+            ddata[j + 6] = t6;
+            ddata[j + 7] = t7;
+        }
+#endif
+        
+        // Process remaining pixels with scalar code
+        for( ; j < size.width; j++ )
             ddata[j] = tab[sdata[j] - mdata[j] + 255];
     }
 }
