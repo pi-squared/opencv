@@ -40,6 +40,7 @@
 //
 //M*/
 #include "precomp.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 namespace cv
 {
@@ -53,9 +54,24 @@ initTopBottom( Mat& temp, int border, unsigned int value )
     Size size = temp.size();
     unsigned int* ttop = (unsigned int*)temp.ptr<int>(0);
     unsigned int* tbottom = (unsigned int*)temp.ptr<int>(size.height - 1);
+    
+#if CV_SIMD
+    v_uint32 v_value = vx_setall_u32(value);
+    int vstep = v_uint32::nlanes;
+    int width_aligned = size.width - (size.width % vstep);
+#endif
+    
     for( int i = 0; i < border; i++ )
     {
-        for( int j = 0; j < size.width; j++ )
+        int j = 0;
+#if CV_SIMD
+        for( ; j < width_aligned; j += vstep )
+        {
+            v_store(ttop + j, v_value);
+            v_store(tbottom + j, v_value);
+        }
+#endif
+        for( ; j < size.width; j++ )
         {
             ttop[j] = value;
             tbottom[j] = value;
@@ -120,7 +136,49 @@ distanceTransform_3x3( const Mat& _src, Mat& _temp, Mat& _dist, const float* met
     {
         tmp -= step;
 
-        for( j = size.width - 1; j >= 0; j-- )
+        j = size.width - 1;
+        
+#if CV_SIMD
+        // Process vectorized part from right to left
+        const int vstep = v_uint32::nlanes;
+        
+        for( ; j >= vstep - 1; j -= vstep )
+        {
+            // Load and convert current values to float immediately
+            v_int32 t0_int = v_reinterpret_as_s32(vx_load(tmp + j - vstep + 1));
+            v_float32 t0_f = v_cvt_f32(t0_int);
+            
+            // We'll check if updates are needed on all elements
+            // Load neighbor values
+            v_int32 t_se_int = v_reinterpret_as_s32(vx_load(tmp + j - vstep + 1 + step + 1));
+            v_int32 t_s_int = v_reinterpret_as_s32(vx_load(tmp + j - vstep + 1 + step));
+            v_int32 t_sw_int = v_reinterpret_as_s32(vx_load(tmp + j - vstep + 1 + step - 1));
+            v_int32 t_e_int = v_reinterpret_as_s32(vx_load(tmp + j - vstep + 1 + 1));
+            
+            // Convert to float and add distances
+            v_float32 t_se_f = v_add(v_cvt_f32(t_se_int), v_cvt_f32(v_reinterpret_as_s32(vx_setall_u32(DIAG_DIST))));
+            v_float32 t_s_f = v_add(v_cvt_f32(t_s_int), v_cvt_f32(v_reinterpret_as_s32(vx_setall_u32(HV_DIST))));
+            v_float32 t_sw_f = v_add(v_cvt_f32(t_sw_int), v_cvt_f32(v_reinterpret_as_s32(vx_setall_u32(DIAG_DIST))));
+            v_float32 t_e_f = v_add(v_cvt_f32(t_e_int), v_cvt_f32(v_reinterpret_as_s32(vx_setall_u32(HV_DIST))));
+            
+            // Find minimum distances
+            t0_f = v_min(t0_f, t_se_f);
+            t0_f = v_min(t0_f, t_s_f);
+            t0_f = v_min(t0_f, t_sw_f);
+            t0_f = v_min(t0_f, t_e_f);
+            
+            // Convert back to int and store if changed
+            v_int32 t0_new = v_round(t0_f);
+            v_store(tmp + j - vstep + 1, v_reinterpret_as_u32(t0_new));
+            
+            // Store final float result with scale
+            v_float32 d0 = v_mul(t0_f, vx_setall_f32(scale));
+            v_store(d + j - vstep + 1, d0);
+        }
+#endif
+        
+        // Process remaining pixels
+        for( ; j >= 0; j-- )
         {
             unsigned int t0 = tmp[j];
             if( t0 > HV_DIST )
@@ -205,7 +263,60 @@ distanceTransform_5x5( const Mat& _src, Mat& _temp, Mat& _dist, const float* met
     {
         tmp -= step;
 
-        for( j = size.width - 1; j >= 0; j-- )
+        j = size.width - 1;
+        
+#if CV_SIMD
+        // Process vectorized part from right to left
+        const int vstep = v_uint32::nlanes;
+        
+        for( ; j >= vstep - 1; j -= vstep )
+        {
+            // Load and convert current values to float immediately
+            v_int32 t0_int = v_reinterpret_as_s32(vx_load(tmp + j - vstep + 1));
+            v_float32 t0_f = v_cvt_f32(t0_int);
+            
+            // Load neighbor values
+            v_int32 t_s2e_int = v_reinterpret_as_s32(vx_load(tmp + j - vstep + 1 + step*2 + 1));
+            v_int32 t_s2w_int = v_reinterpret_as_s32(vx_load(tmp + j - vstep + 1 + step*2 - 1));
+            v_int32 t_se2_int = v_reinterpret_as_s32(vx_load(tmp + j - vstep + 1 + step + 2));
+            v_int32 t_se_int = v_reinterpret_as_s32(vx_load(tmp + j - vstep + 1 + step + 1));
+            v_int32 t_s_int = v_reinterpret_as_s32(vx_load(tmp + j - vstep + 1 + step));
+            v_int32 t_sw_int = v_reinterpret_as_s32(vx_load(tmp + j - vstep + 1 + step - 1));
+            v_int32 t_sw2_int = v_reinterpret_as_s32(vx_load(tmp + j - vstep + 1 + step - 2));
+            v_int32 t_e_int = v_reinterpret_as_s32(vx_load(tmp + j - vstep + 1 + 1));
+            
+            // Convert to float and add distances
+            v_float32 t_s2e_f = v_add(v_cvt_f32(t_s2e_int), v_cvt_f32(v_reinterpret_as_s32(vx_setall_u32(LONG_DIST))));
+            v_float32 t_s2w_f = v_add(v_cvt_f32(t_s2w_int), v_cvt_f32(v_reinterpret_as_s32(vx_setall_u32(LONG_DIST))));
+            v_float32 t_se2_f = v_add(v_cvt_f32(t_se2_int), v_cvt_f32(v_reinterpret_as_s32(vx_setall_u32(LONG_DIST))));
+            v_float32 t_se_f = v_add(v_cvt_f32(t_se_int), v_cvt_f32(v_reinterpret_as_s32(vx_setall_u32(DIAG_DIST))));
+            v_float32 t_s_f = v_add(v_cvt_f32(t_s_int), v_cvt_f32(v_reinterpret_as_s32(vx_setall_u32(HV_DIST))));
+            v_float32 t_sw_f = v_add(v_cvt_f32(t_sw_int), v_cvt_f32(v_reinterpret_as_s32(vx_setall_u32(DIAG_DIST))));
+            v_float32 t_sw2_f = v_add(v_cvt_f32(t_sw2_int), v_cvt_f32(v_reinterpret_as_s32(vx_setall_u32(LONG_DIST))));
+            v_float32 t_e_f = v_add(v_cvt_f32(t_e_int), v_cvt_f32(v_reinterpret_as_s32(vx_setall_u32(HV_DIST))));
+            
+            // Find minimum distances
+            t0_f = v_min(t0_f, t_s2e_f);
+            t0_f = v_min(t0_f, t_s2w_f);
+            t0_f = v_min(t0_f, t_se2_f);
+            t0_f = v_min(t0_f, t_se_f);
+            t0_f = v_min(t0_f, t_s_f);
+            t0_f = v_min(t0_f, t_sw_f);
+            t0_f = v_min(t0_f, t_sw2_f);
+            t0_f = v_min(t0_f, t_e_f);
+            
+            // Convert back to int and store
+            v_int32 t0_new = v_round(t0_f);
+            v_store(tmp + j - vstep + 1, v_reinterpret_as_u32(t0_new));
+            
+            // Store final float result with scale
+            v_float32 d0 = v_mul(t0_f, vx_setall_f32(scale));
+            v_store(d + j - vstep + 1, d0);
+        }
+#endif
+        
+        // Process remaining pixels
+        for( ; j >= 0; j-- )
         {
             unsigned int t0 = tmp[j];
             if( t0 > HV_DIST )
