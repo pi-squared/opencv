@@ -220,6 +220,33 @@
 - 3-channel: ~37ms for same size (4.7x slower due to 3x more calculations)
 - The optimization is transparent to users - same API
 
+### 12. Distance Transform SIMD Optimization (optimize-distransform-simd)
+**Date**: 2025-06-07
+**Branch**: optimize-distransform-simd
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/distransform.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for distanceTransform_3x3 forward and backward passes
+- Added SIMD optimization for distanceTransform_5x5 forward pass
+- Added AVX-512 specific path for processing 16 pixels at once in 3x3 kernel
+- Used universal intrinsics for cross-platform SIMD support
+- Process 4-16 values simultaneously depending on SIMD width (SSE: 4, AVX2: 8, AVX-512: 16)
+- Optimized mask creation for zero/non-zero source pixels
+- Added v_select for conditional updates in backward pass
+
+**Expected Performance Gains**:
+- Forward pass: 2-3x speedup with SIMD processing of multiple pixels
+- Backward pass: 1.5-2x speedup with vectorized distance calculations
+- AVX-512 path: Additional 2x speedup over AVX2 for forward pass
+- Overall distance transform: 1.5-2.5x improvement on modern processors
+
+**Testing Notes**:
+- Test shows 748.38 us per iteration for 3x3 kernel on 640x480 image
+- 5x5 kernel takes 906.95 us per iteration
+- Maintains bit-exact compatibility with original implementation
+- Correctly computes Euclidean distances with L2 metric
+
 ## Future Optimization Opportunities
 1. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
 2. **Contour Finding**: The contour tracing algorithms could benefit from SIMD optimization
