@@ -982,11 +982,32 @@ static void common_matchTemplate( Mat& img, Mat& templ, Mat& result, int method,
 
             if( numType == 1 )
             {
-                for( k = 0; k < cn; k++ )
+#if CV_SIMD
+                if (cn == 1)
                 {
-                    t = p0[idx+k] - p1[idx+k] - p2[idx+k] + p3[idx+k];
-                    wndMean2 += t*t;
-                    num -= t*templMean[k];
+                    t = p0[idx] - p1[idx] - p2[idx] + p3[idx];
+                    wndMean2 = t*t;
+                    num -= t*templMean[0];
+                }
+                else if (cn == 3 && checkHardwareSupport(CV_CPU_SSE2))
+                {
+                    // Unroll loop for 3-channel processing
+                    double t0 = p0[idx] - p1[idx] - p2[idx] + p3[idx];
+                    double t1 = p0[idx+1] - p1[idx+1] - p2[idx+1] + p3[idx+1];
+                    double t2 = p0[idx+2] - p1[idx+2] - p2[idx+2] + p3[idx+2];
+                    
+                    wndMean2 = t0*t0 + t1*t1 + t2*t2;
+                    num -= t0*templMean[0] + t1*templMean[1] + t2*templMean[2];
+                }
+                else
+#endif
+                {
+                    for( k = 0; k < cn; k++ )
+                    {
+                        t = p0[idx+k] - p1[idx+k] - p2[idx+k] + p3[idx+k];
+                        wndMean2 += t*t;
+                        num -= t*templMean[k];
+                    }
                 }
 
                 wndMean2 *= invArea;
@@ -994,10 +1015,27 @@ static void common_matchTemplate( Mat& img, Mat& templ, Mat& result, int method,
 
             if( isNormed || numType == 2 )
             {
-                for( k = 0; k < cn; k++ )
+#if CV_SIMD
+                if (cn == 1)
                 {
-                    t = q0[idx2+k] - q1[idx2+k] - q2[idx2+k] + q3[idx2+k];
-                    wndSum2 += t;
+                    wndSum2 = q0[idx2] - q1[idx2] - q2[idx2] + q3[idx2];
+                }
+                else if (cn == 3 && checkHardwareSupport(CV_CPU_SSE2))
+                {
+                    // Unroll loop for 3-channel processing
+                    double s0 = q0[idx2] - q1[idx2] - q2[idx2] + q3[idx2];
+                    double s1 = q0[idx2+1] - q1[idx2+1] - q2[idx2+1] + q3[idx2+1];
+                    double s2 = q0[idx2+2] - q1[idx2+2] - q2[idx2+2] + q3[idx2+2];
+                    wndSum2 = s0 + s1 + s2;
+                }
+                else
+#endif
+                {
+                    for( k = 0; k < cn; k++ )
+                    {
+                        t = q0[idx2+k] - q1[idx2+k] - q2[idx2+k] + q3[idx2+k];
+                        wndSum2 += t;
+                    }
                 }
 
                 if( numType == 2 )
