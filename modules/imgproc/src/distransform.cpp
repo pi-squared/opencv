@@ -40,6 +40,7 @@
 //
 //M*/
 #include "precomp.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 namespace cv
 {
@@ -94,7 +95,79 @@ distanceTransform_3x3( const Mat& _src, Mat& _temp, Mat& _dist, const float* met
         for( j = 0; j < BORDER; j++ )
             tmp[-j-1] = tmp[size.width + j] = DIST_MAX;
 
-        for( j = 0; j < size.width; j++ )
+        j = 0;
+#if CV_SIMD
+        // SIMD optimized forward pass
+        v_uint32 vDiagDist = vx_setall<unsigned int>(DIAG_DIST);
+        v_uint32 vHVDist = vx_setall<unsigned int>(HV_DIST);
+        v_uint32 vDistMax = vx_setall<unsigned int>(DIST_MAX);
+        
+#if CV_AVX512_SKX
+        // AVX-512 specific optimization - process 16 pixels at once
+        for( ; j <= size.width - 16; j += 16 )
+        {
+            // Create mask for non-zero source pixels using AVX-512 mask registers
+            __mmask16 src_mask = 0;
+            for(int k = 0; k < 16; k++)
+            {
+                if(s[j+k]) src_mask |= (1 << k);
+            }
+            
+            // Load and calculate distances from neighbors
+            __m512i t0 = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j - step - 1)), _mm512_set1_epi32(DIAG_DIST));
+            __m512i t = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j - step)), _mm512_set1_epi32(HV_DIST));
+            t0 = _mm512_min_epu32(t0, t);
+            
+            t = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j - step + 1)), _mm512_set1_epi32(DIAG_DIST));
+            t0 = _mm512_min_epu32(t0, t);
+            
+            t = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j - 1)), _mm512_set1_epi32(HV_DIST));
+            t0 = _mm512_min_epu32(t0, t);
+            
+            // Clamp to DIST_MAX
+            t0 = _mm512_min_epu32(t0, _mm512_set1_epi32(DIST_MAX));
+            
+            // Apply mask: if source pixel is 0, result is 0
+            t0 = _mm512_maskz_mov_epi32(src_mask, t0);
+            
+            _mm512_storeu_si512((__m512i*)(tmp + j), t0);
+        }
+#endif
+        
+        // Process multiple pixels at once using SIMD
+        for( ; j <= size.width - VTraits<v_uint32>::vlanes(); j += VTraits<v_uint32>::vlanes() )
+        {
+            // Create mask for non-zero source pixels
+            unsigned int src_mask[VTraits<v_uint32>::max_nlanes];
+            for(int k = 0; k < VTraits<v_uint32>::vlanes(); k++)
+            {
+                src_mask[k] = s[j+k] ? 0xFFFFFFFF : 0;
+            }
+            v_uint32 mask = vx_load(src_mask);
+            
+            // Calculate distances from neighbors
+            v_uint32 t0 = v_add(vx_load(tmp + j - step - 1), vDiagDist);
+            v_uint32 t = v_add(vx_load(tmp + j - step), vHVDist);
+            t0 = v_min(t0, t);
+            
+            t = v_add(vx_load(tmp + j - step + 1), vDiagDist);
+            t0 = v_min(t0, t);
+            
+            t = v_add(vx_load(tmp + j - 1), vHVDist);
+            t0 = v_min(t0, t);
+            
+            // Clamp to DIST_MAX
+            t0 = v_min(t0, vDistMax);
+            
+            // Apply mask: if source pixel is 0, result is 0, otherwise use computed distance
+            t0 = v_and(t0, mask);
+            
+            v_store(tmp + j, t0);
+        }
+#endif
+        
+        // Process remaining pixels
+        for( ; j < size.width; j++ )
         {
             if( !s[j] )
                 tmp[j] = 0;
@@ -120,7 +193,53 @@ distanceTransform_3x3( const Mat& _src, Mat& _temp, Mat& _dist, const float* met
     {
         tmp -= step;
 
-        for( j = size.width - 1; j >= 0; j-- )
+        j = size.width;
+#if CV_SIMD
+        // SIMD optimized backward pass
+        const int vlanes = VTraits<v_uint32>::vlanes();
+        v_uint32 vDiagDist2 = vx_setall<unsigned int>(DIAG_DIST);
+        v_uint32 vHVDist2 = vx_setall<unsigned int>(HV_DIST);
+        v_uint32 vHVDistThresh = vx_setall<unsigned int>(HV_DIST);
+        v_float32 vScale = vx_setall<float>(scale);
+        
+        // Process multiple pixels at once from right to left
+        for( ; j >= vlanes; j -= vlanes )
+        {
+            int idx = j - vlanes;
+            v_uint32 t0 = vx_load(tmp + idx);
+            
+            // Check which elements need updating (t0 > HV_DIST)
+            v_uint32 needs_update = v_gt(t0, vHVDistThresh);
+            
+            if(v_check_any(needs_update))
+            {
+                v_uint32 t = v_add(vx_load(tmp + idx + step + 1), vDiagDist2);
+                v_uint32 t0_new = v_min(t0, t);
+                
+                t = v_add(vx_load(tmp + idx + step), vHVDist2);
+                t0_new = v_min(t0_new, t);
+                
+                t = v_add(vx_load(tmp + idx + step - 1), vDiagDist2);
+                t0_new = v_min(t0_new, t);
+                
+                t = v_add(vx_load(tmp + idx + 1), vHVDist2);
+                t0_new = v_min(t0_new, t);
+                
+                // Only update values that need updating
+                t0 = v_select(needs_update, t0_new, t0);
+                v_store(tmp + idx, t0);
+            }
+            
+            // Convert to float and store
+            v_int32 t0_int = v_reinterpret_as_s32(t0);
+            v_float32 result = v_cvt_f32(t0_int);
+            result = v_mul(result, vScale);
+            v_store(d + idx, result);
+        }
+#endif
+        
+        // Process remaining pixels
+        for( ; j >= 0; j-- )
         {
             unsigned int t0 = tmp[j];
             if( t0 > HV_DIST )
@@ -171,7 +290,58 @@ distanceTransform_5x5( const Mat& _src, Mat& _temp, Mat& _dist, const float* met
         for( j = 0; j < BORDER; j++ )
             tmp[-j-1] = tmp[size.width + j] = DIST_MAX;
 
-        for( j = 0; j < size.width; j++ )
+        j = 0;
+#if CV_SIMD
+        // SIMD optimized forward pass for 5x5 kernel
+        v_uint32 vLongDist = vx_setall<unsigned int>(LONG_DIST);
+        v_uint32 vDiagDist = vx_setall<unsigned int>(DIAG_DIST);
+        v_uint32 vHVDist = vx_setall<unsigned int>(HV_DIST);
+        v_uint32 vDistMax = vx_setall<unsigned int>(DIST_MAX);
+        
+        for( ; j <= size.width - VTraits<v_uint32>::vlanes(); j += VTraits<v_uint32>::vlanes() )
+        {
+            // Create mask for non-zero source pixels
+            unsigned int src_mask[VTraits<v_uint32>::max_nlanes];
+            for(int k = 0; k < VTraits<v_uint32>::vlanes(); k++)
+            {
+                src_mask[k] = s[j+k] ? 0xFFFFFFFF : 0;
+            }
+            v_uint32 mask = vx_load(src_mask);
+            
+            // Calculate distances from 8 neighbors
+            v_uint32 t0 = v_add(vx_load(tmp + j - step*2 - 1), vLongDist);
+            v_uint32 t = v_add(vx_load(tmp + j - step*2 + 1), vLongDist);
+            t0 = v_min(t0, t);
+            
+            t = v_add(vx_load(tmp + j - step - 2), vLongDist);
+            t0 = v_min(t0, t);
+            
+            t = v_add(vx_load(tmp + j - step - 1), vDiagDist);
+            t0 = v_min(t0, t);
+            
+            t = v_add(vx_load(tmp + j - step), vHVDist);
+            t0 = v_min(t0, t);
+            
+            t = v_add(vx_load(tmp + j - step + 1), vDiagDist);
+            t0 = v_min(t0, t);
+            
+            t = v_add(vx_load(tmp + j - step + 2), vLongDist);
+            t0 = v_min(t0, t);
+            
+            t = v_add(vx_load(tmp + j - 1), vHVDist);
+            t0 = v_min(t0, t);
+            
+            // Clamp to DIST_MAX
+            t0 = v_min(t0, vDistMax);
+            
+            // Apply mask: if source pixel is 0, result is 0
+            t0 = v_and(t0, mask);
+            
+            v_store(tmp + j, t0);
+        }
+#endif
+        
+        for( ; j < size.width; j++ )
         {
             if( !s[j] )
                 tmp[j] = 0;
