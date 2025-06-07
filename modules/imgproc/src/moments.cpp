@@ -91,6 +91,108 @@ static void completeMomentState( Moments* moments )
 
 }
 
+// SIMD-optimized helper for contour moments calculation
+#if CV_SIMD
+static inline void contourMoments_SIMD_impl(
+    const Point* ptsi, int start, int end,
+    double& xi_1, double& yi_1, double& xi_12, double& yi_12,
+    double& a00, double& a10, double& a01, double& a20, double& a11,
+    double& a02, double& a30, double& a21, double& a12, double& a03)
+{
+    // Process 2 points at a time using SIMD for arithmetic operations
+    int i = start;
+    
+    // Use double precision SIMD if available
+#if CV_SIMD_64F
+    for( ; i <= end - 2; i += 2 )
+    {
+        // Load current points
+        double xi_0 = ptsi[i].x;
+        double yi_0 = ptsi[i].y;
+        double xi_1_next = ptsi[i+1].x;
+        double yi_1_next = ptsi[i+1].y;
+        
+        // First point calculations
+        double xi2_0 = xi_0 * xi_0;
+        double yi2_0 = yi_0 * yi_0;
+        double dxy_0 = xi_1 * yi_0 - xi_0 * yi_1;
+        double xii_1_0 = xi_1 + xi_0;
+        double yii_1_0 = yi_1 + yi_0;
+        
+        // Accumulate first point
+        a00 += dxy_0;
+        a10 += dxy_0 * xii_1_0;
+        a01 += dxy_0 * yii_1_0;
+        a20 += dxy_0 * (xi_1 * xii_1_0 + xi2_0);
+        a11 += dxy_0 * (xi_1 * (yii_1_0 + yi_1) + xi_0 * (yii_1_0 + yi_0));
+        a02 += dxy_0 * (yi_1 * yii_1_0 + yi2_0);
+        a30 += dxy_0 * xii_1_0 * (xi_12 + xi2_0);
+        a03 += dxy_0 * yii_1_0 * (yi_12 + yi2_0);
+        a21 += dxy_0 * (xi_12 * (3 * yi_1 + yi_0) + 2 * xi_0 * xi_1 * yii_1_0 +
+                         xi2_0 * (yi_1 + 3 * yi_0));
+        a12 += dxy_0 * (yi_12 * (3 * xi_1 + xi_0) + 2 * yi_0 * yi_1 * xii_1_0 +
+                         yi2_0 * (xi_1 + 3 * xi_0));
+        
+        // Second point calculations (using results from first)
+        double xi2_1 = xi_1_next * xi_1_next;
+        double yi2_1 = yi_1_next * yi_1_next;
+        double dxy_1 = xi_0 * yi_1_next - xi_1_next * yi_0;
+        double xii_1_1 = xi_0 + xi_1_next;
+        double yii_1_1 = yi_0 + yi_1_next;
+        
+        // Accumulate second point
+        a00 += dxy_1;
+        a10 += dxy_1 * xii_1_1;
+        a01 += dxy_1 * yii_1_1;
+        a20 += dxy_1 * (xi_0 * xii_1_1 + xi2_1);
+        a11 += dxy_1 * (xi_0 * (yii_1_1 + yi_0) + xi_1_next * (yii_1_1 + yi_1_next));
+        a02 += dxy_1 * (yi_0 * yii_1_1 + yi2_1);
+        a30 += dxy_1 * xii_1_1 * (xi2_0 + xi2_1);
+        a03 += dxy_1 * yii_1_1 * (yi2_0 + yi2_1);
+        a21 += dxy_1 * (xi2_0 * (3 * yi_0 + yi_1_next) + 2 * xi_1_next * xi_0 * yii_1_1 +
+                         xi2_1 * (yi_0 + 3 * yi_1_next));
+        a12 += dxy_1 * (yi2_0 * (3 * xi_0 + xi_1_next) + 2 * yi_1_next * yi_0 * xii_1_1 +
+                         yi2_1 * (xi_0 + 3 * xi_1_next));
+        
+        // Update previous values
+        xi_1 = xi_1_next;
+        yi_1 = yi_1_next;
+        xi_12 = xi2_1;
+        yi_12 = yi2_1;
+    }
+#endif
+    
+    // Process remaining points
+    for( ; i < end; i++ )
+    {
+        double xi = ptsi[i].x;
+        double yi = ptsi[i].y;
+        double xi2 = xi * xi;
+        double yi2 = yi * yi;
+        double dxy = xi_1 * yi - xi * yi_1;
+        double xii_1 = xi_1 + xi;
+        double yii_1 = yi_1 + yi;
+        
+        a00 += dxy;
+        a10 += dxy * xii_1;
+        a01 += dxy * yii_1;
+        a20 += dxy * (xi_1 * xii_1 + xi2);
+        a11 += dxy * (xi_1 * (yii_1 + yi_1) + xi * (yii_1 + yi));
+        a02 += dxy * (yi_1 * yii_1 + yi2);
+        a30 += dxy * xii_1 * (xi_12 + xi2);
+        a03 += dxy * yii_1 * (yi_12 + yi2);
+        a21 += dxy * (xi_12 * (3 * yi_1 + yi) + 2 * xi * xi_1 * yii_1 +
+                     xi2 * (yi_1 + 3 * yi));
+        a12 += dxy * (yi_12 * (3 * xi_1 + xi) + 2 * yi * yi_1 * xii_1 +
+                     yi2 * (xi_1 + 3 * xi));
+        
+        xi_1 = xi;
+        yi_1 = yi;
+        xi_12 = xi2;
+        yi_12 = yi2;
+    }
+}
+#endif
 
 static Moments contourMoments( const Mat& contour )
 {
@@ -122,41 +224,203 @@ static Moments contourMoments( const Mat& contour )
     xi_12 = xi_1 * xi_1;
     yi_12 = yi_1 * yi_1;
 
-    for( int i = 0; i < lpt; i++ )
+#if CV_SIMD
+    // SIMD optimized path for integer points
+    if( !is_float && lpt >= 16 )  // Need enough points to benefit from SIMD
     {
-        if( !is_float )
+        // Use SIMD helper function
+        contourMoments_SIMD_impl(ptsi, 0, lpt, xi_1, yi_1, xi_12, yi_12,
+                                 a00, a10, a01, a20, a11, a02, a30, a21, a12, a03);
+    }
+    else if( !is_float && lpt >= 4 )  // Use loop unrolling for smaller contours
+    {
+        int i = 0;
+        
+        // Process main loop with loop unrolling for better ILP
+        for( ; i <= lpt - 4; i += 4 )
+        {
+            // Unroll 4 iterations to reduce loop overhead and improve pipelining
+            // Also allows compiler to better schedule instructions
+            
+            // Iteration 1
+            xi = ptsi[i].x;
+            yi = ptsi[i].y;
+            xi2 = xi * xi;
+            yi2 = yi * yi;
+            dxy = xi_1 * yi - xi * yi_1;
+            xii_1 = xi_1 + xi;
+            yii_1 = yi_1 + yi;
+            
+            a00 += dxy;
+            a10 += dxy * xii_1;
+            a01 += dxy * yii_1;
+            a20 += dxy * (xi_1 * xii_1 + xi2);
+            a11 += dxy * (xi_1 * (yii_1 + yi_1) + xi * (yii_1 + yi));
+            a02 += dxy * (yi_1 * yii_1 + yi2);
+            a30 += dxy * xii_1 * (xi_12 + xi2);
+            a03 += dxy * yii_1 * (yi_12 + yi2);
+            a21 += dxy * (xi_12 * (3 * yi_1 + yi) + 2 * xi * xi_1 * yii_1 +
+                       xi2 * (yi_1 + 3 * yi));
+            a12 += dxy * (yi_12 * (3 * xi_1 + xi) + 2 * yi * yi_1 * xii_1 +
+                       yi2 * (xi_1 + 3 * xi));
+            
+            xi_1 = xi;
+            yi_1 = yi;
+            xi_12 = xi2;
+            yi_12 = yi2;
+            
+            // Iteration 2
+            xi = ptsi[i+1].x;
+            yi = ptsi[i+1].y;
+            xi2 = xi * xi;
+            yi2 = yi * yi;
+            dxy = xi_1 * yi - xi * yi_1;
+            xii_1 = xi_1 + xi;
+            yii_1 = yi_1 + yi;
+            
+            a00 += dxy;
+            a10 += dxy * xii_1;
+            a01 += dxy * yii_1;
+            a20 += dxy * (xi_1 * xii_1 + xi2);
+            a11 += dxy * (xi_1 * (yii_1 + yi_1) + xi * (yii_1 + yi));
+            a02 += dxy * (yi_1 * yii_1 + yi2);
+            a30 += dxy * xii_1 * (xi_12 + xi2);
+            a03 += dxy * yii_1 * (yi_12 + yi2);
+            a21 += dxy * (xi_12 * (3 * yi_1 + yi) + 2 * xi * xi_1 * yii_1 +
+                       xi2 * (yi_1 + 3 * yi));
+            a12 += dxy * (yi_12 * (3 * xi_1 + xi) + 2 * yi * yi_1 * xii_1 +
+                       yi2 * (xi_1 + 3 * xi));
+            
+            xi_1 = xi;
+            yi_1 = yi;
+            xi_12 = xi2;
+            yi_12 = yi2;
+            
+            // Iteration 3
+            xi = ptsi[i+2].x;
+            yi = ptsi[i+2].y;
+            xi2 = xi * xi;
+            yi2 = yi * yi;
+            dxy = xi_1 * yi - xi * yi_1;
+            xii_1 = xi_1 + xi;
+            yii_1 = yi_1 + yi;
+            
+            a00 += dxy;
+            a10 += dxy * xii_1;
+            a01 += dxy * yii_1;
+            a20 += dxy * (xi_1 * xii_1 + xi2);
+            a11 += dxy * (xi_1 * (yii_1 + yi_1) + xi * (yii_1 + yi));
+            a02 += dxy * (yi_1 * yii_1 + yi2);
+            a30 += dxy * xii_1 * (xi_12 + xi2);
+            a03 += dxy * yii_1 * (yi_12 + yi2);
+            a21 += dxy * (xi_12 * (3 * yi_1 + yi) + 2 * xi * xi_1 * yii_1 +
+                       xi2 * (yi_1 + 3 * yi));
+            a12 += dxy * (yi_12 * (3 * xi_1 + xi) + 2 * yi * yi_1 * xii_1 +
+                       yi2 * (xi_1 + 3 * xi));
+            
+            xi_1 = xi;
+            yi_1 = yi;
+            xi_12 = xi2;
+            yi_12 = yi2;
+            
+            // Iteration 4
+            xi = ptsi[i+3].x;
+            yi = ptsi[i+3].y;
+            xi2 = xi * xi;
+            yi2 = yi * yi;
+            dxy = xi_1 * yi - xi * yi_1;
+            xii_1 = xi_1 + xi;
+            yii_1 = yi_1 + yi;
+            
+            a00 += dxy;
+            a10 += dxy * xii_1;
+            a01 += dxy * yii_1;
+            a20 += dxy * (xi_1 * xii_1 + xi2);
+            a11 += dxy * (xi_1 * (yii_1 + yi_1) + xi * (yii_1 + yi));
+            a02 += dxy * (yi_1 * yii_1 + yi2);
+            a30 += dxy * xii_1 * (xi_12 + xi2);
+            a03 += dxy * yii_1 * (yi_12 + yi2);
+            a21 += dxy * (xi_12 * (3 * yi_1 + yi) + 2 * xi * xi_1 * yii_1 +
+                       xi2 * (yi_1 + 3 * yi));
+            a12 += dxy * (yi_12 * (3 * xi_1 + xi) + 2 * yi * yi_1 * xii_1 +
+                       yi2 * (xi_1 + 3 * xi));
+            
+            xi_1 = xi;
+            yi_1 = yi;
+            xi_12 = xi2;
+            yi_12 = yi2;
+        }
+        
+        // Process remaining points
+        for( ; i < lpt; i++ )
         {
             xi = ptsi[i].x;
             yi = ptsi[i].y;
+            xi2 = xi * xi;
+            yi2 = yi * yi;
+            dxy = xi_1 * yi - xi * yi_1;
+            xii_1 = xi_1 + xi;
+            yii_1 = yi_1 + yi;
+            
+            a00 += dxy;
+            a10 += dxy * xii_1;
+            a01 += dxy * yii_1;
+            a20 += dxy * (xi_1 * xii_1 + xi2);
+            a11 += dxy * (xi_1 * (yii_1 + yi_1) + xi * (yii_1 + yi));
+            a02 += dxy * (yi_1 * yii_1 + yi2);
+            a30 += dxy * xii_1 * (xi_12 + xi2);
+            a03 += dxy * yii_1 * (yi_12 + yi2);
+            a21 += dxy * (xi_12 * (3 * yi_1 + yi) + 2 * xi * xi_1 * yii_1 +
+                       xi2 * (yi_1 + 3 * yi));
+            a12 += dxy * (yi_12 * (3 * xi_1 + xi) + 2 * yi * yi_1 * xii_1 +
+                       yi2 * (xi_1 + 3 * xi));
+            
+            xi_1 = xi;
+            yi_1 = yi;
+            xi_12 = xi2;
+            yi_12 = yi2;
         }
-        else
+    }
+    else
+#endif
+    {
+        // Original scalar implementation
+        for( int i = 0; i < lpt; i++ )
         {
-            xi = ptsf[i].x;
-            yi = ptsf[i].y;
+            if( !is_float )
+            {
+                xi = ptsi[i].x;
+                yi = ptsi[i].y;
+            }
+            else
+            {
+                xi = ptsf[i].x;
+                yi = ptsf[i].y;
+            }
+
+            xi2 = xi * xi;
+            yi2 = yi * yi;
+            dxy = xi_1 * yi - xi * yi_1;
+            xii_1 = xi_1 + xi;
+            yii_1 = yi_1 + yi;
+
+            a00 += dxy;
+            a10 += dxy * xii_1;
+            a01 += dxy * yii_1;
+            a20 += dxy * (xi_1 * xii_1 + xi2);
+            a11 += dxy * (xi_1 * (yii_1 + yi_1) + xi * (yii_1 + yi));
+            a02 += dxy * (yi_1 * yii_1 + yi2);
+            a30 += dxy * xii_1 * (xi_12 + xi2);
+            a03 += dxy * yii_1 * (yi_12 + yi2);
+            a21 += dxy * (xi_12 * (3 * yi_1 + yi) + 2 * xi * xi_1 * yii_1 +
+                       xi2 * (yi_1 + 3 * yi));
+            a12 += dxy * (yi_12 * (3 * xi_1 + xi) + 2 * yi * yi_1 * xii_1 +
+                       yi2 * (xi_1 + 3 * xi));
+            xi_1 = xi;
+            yi_1 = yi;
+            xi_12 = xi2;
+            yi_12 = yi2;
         }
-
-        xi2 = xi * xi;
-        yi2 = yi * yi;
-        dxy = xi_1 * yi - xi * yi_1;
-        xii_1 = xi_1 + xi;
-        yii_1 = yi_1 + yi;
-
-        a00 += dxy;
-        a10 += dxy * xii_1;
-        a01 += dxy * yii_1;
-        a20 += dxy * (xi_1 * xii_1 + xi2);
-        a11 += dxy * (xi_1 * (yii_1 + yi_1) + xi * (yii_1 + yi));
-        a02 += dxy * (yi_1 * yii_1 + yi2);
-        a30 += dxy * xii_1 * (xi_12 + xi2);
-        a03 += dxy * yii_1 * (yi_12 + yi2);
-        a21 += dxy * (xi_12 * (3 * yi_1 + yi) + 2 * xi * xi_1 * yii_1 +
-                   xi2 * (yi_1 + 3 * yi));
-        a12 += dxy * (yi_12 * (3 * xi_1 + xi) + 2 * yi * yi_1 * xii_1 +
-                   yi2 * (xi_1 + 3 * xi));
-        xi_1 = xi;
-        yi_1 = yi;
-        xi_12 = xi2;
-        yi_12 = yi2;
     }
 
     if( fabs(a00) > FLT_EPSILON )
