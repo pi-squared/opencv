@@ -542,11 +542,134 @@ calcHist_8u( std::vector<uchar*>& _ptrs, const std::vector<int>& _deltas,
         int matH[256] = { 0, };
         const uchar* p0 = (const uchar*)ptrs[0];
 
-        for( ; imsize.height--; p0 += step0, mask += mstep )
+#if CV_SIMD
+        // SIMD optimized histogram calculation
+        if( !mask && d0 == 1 )
         {
-            if( !mask )
+#if CV_AVX512_SKX
+            // AVX-512 optimized path with 8 sub-histograms for better parallelism
+            const int nSubHists = 8;
+            CV_DECL_ALIGNED(64) int subHists[nSubHists][256];
+            memset(subHists, 0, sizeof(subHists));
+            
+            for( int y = 0; y < imsize.height; y++, p0 += step0 )
             {
-                if( d0 == 1 )
+                x = 0;
+                
+                // Process 512 bits (64 bytes) at a time
+                for( ; x <= imsize.width - 64 * 2; x += 64 * 2 )
+                {
+                    // Prefetch next cache lines
+                    _mm_prefetch((const char*)(p0 + x + 128), _MM_HINT_T0);
+                    _mm_prefetch((const char*)(p0 + x + 192), _MM_HINT_T0);
+                    
+                    // Process 8 vectors of 64 bytes each
+                    for( int k = 0; k < 8; k++ )
+                    {
+                        v_uint8 v = vx_load(p0 + x + k * 16);
+                        uchar pixels[16];
+                        v_store(pixels, v);
+                        
+                        // Unroll inner loop for better performance
+                        for( int i = 0; i < 16; i += 4 )
+                        {
+                            subHists[k][pixels[i]]++;
+                            subHists[k][pixels[i+1]]++;
+                            subHists[k][pixels[i+2]]++;
+                            subHists[k][pixels[i+3]]++;
+                        }
+                    }
+                }
+                
+                // Process remaining pixels
+                for( ; x < imsize.width; x++ )
+                    matH[p0[x]]++;
+            }
+            
+            // Merge sub-histograms with SIMD
+            for( int i = 0; i < 256; i += 16 )
+            {
+                v_int32 sum0 = vx_setzero<v_int32>();
+                v_int32 sum1 = vx_setzero<v_int32>();
+                v_int32 sum2 = vx_setzero<v_int32>();
+                v_int32 sum3 = vx_setzero<v_int32>();
+                
+                for( int j = 0; j < nSubHists; j++ )
+                {
+                    sum0 = v_add(sum0, vx_load(subHists[j] + i));
+                    sum1 = v_add(sum1, vx_load(subHists[j] + i + 4));
+                    sum2 = v_add(sum2, vx_load(subHists[j] + i + 8));
+                    sum3 = v_add(sum3, vx_load(subHists[j] + i + 12));
+                }
+                
+                v_store(matH + i, sum0);
+                v_store(matH + i + 4, sum1);
+                v_store(matH + i + 8, sum2);
+                v_store(matH + i + 12, sum3);
+            }
+#else
+            // Standard SIMD path with 4 sub-histograms
+            const int nSubHists = 4;
+            int subHists[nSubHists][256];
+            memset(subHists, 0, sizeof(subHists));
+            
+            for( int y = 0; y < imsize.height; y++, p0 += step0 )
+            {
+                x = 0;
+                
+                // Process multiple pixels using SIMD
+                int nlanes = v_uint8::nlanes;
+                for( ; x <= imsize.width - nlanes * nSubHists; x += nlanes * nSubHists )
+                {
+                    // Load and process 4 vectors
+                    v_uint8 v0 = vx_load(p0 + x);
+                    v_uint8 v1 = vx_load(p0 + x + nlanes);
+                    v_uint8 v2 = vx_load(p0 + x + nlanes * 2);
+                    v_uint8 v3 = vx_load(p0 + x + nlanes * 3);
+                    
+                    // Extract values and update sub-histograms
+                    uchar pixels0[v_uint8::nlanes];
+                    uchar pixels1[v_uint8::nlanes];
+                    uchar pixels2[v_uint8::nlanes];
+                    uchar pixels3[v_uint8::nlanes];
+                    
+                    v_store(pixels0, v0);
+                    v_store(pixels1, v1);
+                    v_store(pixels2, v2);
+                    v_store(pixels3, v3);
+                    
+                    // Update sub-histograms to reduce conflicts
+                    for( int i = 0; i < nlanes; i++ )
+                    {
+                        subHists[0][pixels0[i]]++;
+                        subHists[1][pixels1[i]]++;
+                        subHists[2][pixels2[i]]++;
+                        subHists[3][pixels3[i]]++;
+                    }
+                }
+                
+                // Process remaining pixels
+                for( ; x < imsize.width; x++ )
+                    matH[p0[x]]++;
+            }
+            
+            // Merge sub-histograms
+            for( int i = 0; i < 256; i++ )
+            {
+                for( int j = 0; j < nSubHists; j++ )
+                    matH[i] += subHists[j][i];
+            }
+#endif // CV_AVX512_SKX
+        }
+        else
+#endif
+        {
+            // Original non-SIMD implementation
+            for( ; imsize.height--; p0 += step0, mask += mstep )
+            {
+                if( !mask )
+                {
+                    if( d0 == 1 )
                 {
                     for( x = 0; x <= imsize.width - 4; x += 4 )
                     {
@@ -576,6 +699,7 @@ calcHist_8u( std::vector<uchar*>& _ptrs, const std::vector<int>& _deltas,
                     if( mask[x] )
                         matH[*p0]++;
         }
+        } // End of else block for non-SIMD path
 
         for(int i = 0; i < 256; i++ )
         {
