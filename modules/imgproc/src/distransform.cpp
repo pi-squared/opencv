@@ -40,6 +40,10 @@
 //
 //M*/
 #include "precomp.hpp"
+#include "opencv2/core/hal/intrin.hpp"
+#if CV_AVX512_SKX
+#include <immintrin.h>
+#endif
 
 namespace cv
 {
@@ -65,6 +69,370 @@ initTopBottom( Mat& temp, int border, unsigned int value )
     }
 }
 
+#if CV_SIMD
+// SIMD-optimized forward pass for 3x3 distance transform
+static void distanceTransform_3x3_forward_simd(const uchar* src, unsigned int* tmp, 
+                                               int width, int height, int srcstep, int step,
+                                               unsigned int HV_DIST, unsigned int DIAG_DIST, unsigned int DIST_MAX)
+{
+    const int simd_width = v_uint32::nlanes;
+    
+    for( int i = 0; i < height; i++ )
+    {
+        // Set borders
+        for( int j = 0; j < 1; j++ )
+            tmp[-j-1] = tmp[width + j] = DIST_MAX;
+            
+        int j = 0;
+        
+#if CV_AVX512_SKX
+        // AVX-512 optimized path with 2x unrolling for better ILP
+        const int avx512_width = 16; // Process 16 uint32 values at once
+        const int unroll_factor = 2;
+        const int chunk_size = avx512_width * unroll_factor;
+        
+        // Prefetch hint for next row
+        if (i + 1 < height)
+            _mm_prefetch((const char*)(src + srcstep), _MM_HINT_T1);
+        
+        for( ; j <= width - chunk_size; j += chunk_size )
+        {
+            // Prefetch for future iterations
+            _mm_prefetch((const char*)(tmp + j + chunk_size - step), _MM_HINT_T0);
+            _mm_prefetch((const char*)(src + j + chunk_size), _MM_HINT_T0);
+            
+            // Process first 16 pixels
+            {
+                // Create mask using AVX-512 mask registers - more efficient than array loading
+                __mmask16 k_src = 0;
+                for( int k = 0; k < avx512_width; k++ )
+                    if( src[j + k] ) k_src |= (1 << k);
+                
+                __m512i v_zero = _mm512_setzero_si512();
+                __m512i v_diag_dist = _mm512_set1_epi32(DIAG_DIST);
+                __m512i v_hv_dist = _mm512_set1_epi32(HV_DIST);
+                __m512i v_dist_max = _mm512_set1_epi32(DIST_MAX);
+                
+                // Load neighbor values and add distances
+                __m512i v_tl = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j - step - 1)), v_diag_dist);
+                __m512i v_t = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j - step)), v_hv_dist);
+                __m512i v_tr = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j - step + 1)), v_diag_dist);
+                __m512i v_l = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j - 1)), v_hv_dist);
+                
+                // Find minimum using AVX-512 min operations
+                __m512i v_min = _mm512_min_epu32(_mm512_min_epu32(v_tl, v_t), _mm512_min_epu32(v_tr, v_l));
+                v_min = _mm512_min_epu32(v_min, v_dist_max);
+                
+                // Use mask to select between 0 and min
+                __m512i v_result = _mm512_mask_blend_epi32(k_src, v_zero, v_min);
+                _mm512_storeu_si512((__m512i*)(tmp + j), v_result);
+            }
+            
+            // Process second 16 pixels (unrolled)
+            {
+                __mmask16 k_src = 0;
+                for( int k = 0; k < avx512_width; k++ )
+                    if( src[j + avx512_width + k] ) k_src |= (1 << k);
+                
+                __m512i v_zero = _mm512_setzero_si512();
+                __m512i v_diag_dist = _mm512_set1_epi32(DIAG_DIST);
+                __m512i v_hv_dist = _mm512_set1_epi32(HV_DIST);
+                __m512i v_dist_max = _mm512_set1_epi32(DIST_MAX);
+                
+                __m512i v_tl = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j + avx512_width - step - 1)), v_diag_dist);
+                __m512i v_t = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j + avx512_width - step)), v_hv_dist);
+                __m512i v_tr = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j + avx512_width - step + 1)), v_diag_dist);
+                __m512i v_l = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j + avx512_width - 1)), v_hv_dist);
+                
+                __m512i v_min = _mm512_min_epu32(_mm512_min_epu32(v_tl, v_t), _mm512_min_epu32(v_tr, v_l));
+                v_min = _mm512_min_epu32(v_min, v_dist_max);
+                
+                __m512i v_result = _mm512_mask_blend_epi32(k_src, v_zero, v_min);
+                _mm512_storeu_si512((__m512i*)(tmp + j + avx512_width), v_result);
+            }
+        }
+        
+        // Process remaining pixels with single AVX-512 vector
+        for( ; j <= width - avx512_width; j += avx512_width )
+        {
+            __mmask16 k_src = 0;
+            for( int k = 0; k < avx512_width; k++ )
+                if( src[j + k] ) k_src |= (1 << k);
+            
+            __m512i v_zero = _mm512_setzero_si512();
+            __m512i v_diag_dist = _mm512_set1_epi32(DIAG_DIST);
+            __m512i v_hv_dist = _mm512_set1_epi32(HV_DIST);
+            __m512i v_dist_max = _mm512_set1_epi32(DIST_MAX);
+            
+            __m512i v_tl = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j - step - 1)), v_diag_dist);
+            __m512i v_t = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j - step)), v_hv_dist);
+            __m512i v_tr = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j - step + 1)), v_diag_dist);
+            __m512i v_l = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j - 1)), v_hv_dist);
+            
+            __m512i v_min = _mm512_min_epu32(_mm512_min_epu32(v_tl, v_t), _mm512_min_epu32(v_tr, v_l));
+            v_min = _mm512_min_epu32(v_min, v_dist_max);
+            
+            __m512i v_result = _mm512_mask_blend_epi32(k_src, v_zero, v_min);
+            _mm512_storeu_si512((__m512i*)(tmp + j), v_result);
+        }
+#else
+        // Standard SIMD processing - process simd_width pixels at a time
+        for( ; j <= width - simd_width; j += simd_width )
+        {
+            // Create mask for source pixels (0 if src is 0, UINT_MAX if src is non-zero)
+            unsigned int mask_arr[v_uint32::nlanes];
+            for( int k = 0; k < simd_width; k++ )
+                mask_arr[k] = src[j + k] ? 0xFFFFFFFF : 0;
+            
+            v_uint32 v_mask = vx_load(mask_arr);
+            v_uint32 v_zero = v_setzero<v_uint32>();
+            
+            // Load neighbor values and add distances
+            v_uint32 v_tl = vx_load(tmp + j - step - 1) + v_setall(DIAG_DIST);
+            v_uint32 v_t = vx_load(tmp + j - step) + v_setall(HV_DIST);
+            v_uint32 v_tr = vx_load(tmp + j - step + 1) + v_setall(DIAG_DIST);
+            v_uint32 v_l = vx_load(tmp + j - 1) + v_setall(HV_DIST);
+            
+            // Find minimum of all neighbors
+            v_uint32 v_min = v_min(v_min(v_tl, v_t), v_min(v_tr, v_l));
+            v_min = v_min(v_min, v_setall(DIST_MAX));
+            
+            // Select: if src is 0, result is 0; otherwise, result is min
+            v_uint32 v_result = v_select(v_mask, v_min, v_zero);
+            v_store(tmp + j, v_result);
+        }
+#endif
+        
+        // Scalar processing for remaining pixels
+        for( ; j < width; j++ )
+        {
+            if( !src[j] )
+                tmp[j] = 0;
+            else
+            {
+                unsigned int t0 = tmp[j-step-1] + DIAG_DIST;
+                unsigned int t = tmp[j-step] + HV_DIST;
+                if( t0 > t ) t0 = t;
+                t = tmp[j-step+1] + DIAG_DIST;
+                if( t0 > t ) t0 = t;
+                t = tmp[j-1] + HV_DIST;
+                if( t0 > t ) t0 = t;
+                tmp[j] = (t0 > DIST_MAX) ? DIST_MAX : t0;
+            }
+        }
+        
+        tmp += step;
+        src += srcstep;
+    }
+}
+
+// SIMD-optimized backward pass for 3x3 distance transform
+static void distanceTransform_3x3_backward_simd(unsigned int* tmp, float* dist,
+                                                int width, int height, int step, int dststep,
+                                                unsigned int HV_DIST, unsigned int DIAG_DIST, float scale)
+{
+    const int simd_width = v_float32::nlanes;
+    v_float32 v_scale = v_setall(scale);
+    
+    for( int i = height - 1; i >= 0; i-- )
+    {
+        tmp -= step;
+        
+        int j = width - 1;
+        
+#if CV_AVX512_SKX
+        // AVX-512 optimized backward pass
+        const int avx512_width = 16;
+        const int unroll_factor = 2;
+        const int chunk_size = avx512_width * unroll_factor;
+        
+        // Prefetch hint for previous row
+        if (i > 0)
+            _mm_prefetch((const char*)(tmp - step), _MM_HINT_T1);
+        
+        // Scalar processing from right to left until we have enough for AVX-512
+        for( ; j >= width - (width % avx512_width) && j >= 0; j-- )
+        {
+            unsigned int t0 = tmp[j];
+            if( t0 > HV_DIST )
+            {
+                unsigned int t = tmp[j+step+1] + DIAG_DIST;
+                if( t0 > t ) t0 = t;
+                t = tmp[j+step] + HV_DIST;
+                if( t0 > t ) t0 = t;
+                t = tmp[j+step-1] + DIAG_DIST;
+                if( t0 > t ) t0 = t;
+                t = tmp[j+1] + HV_DIST;
+                if( t0 > t ) t0 = t;
+                tmp[j] = t0;
+            }
+            dist[j] = (float)(t0 * scale);
+        }
+        
+        // Process with 2x unrolled AVX-512
+        for( ; j >= chunk_size - 1; j -= chunk_size )
+        {
+            // Prefetch for future iterations
+            _mm_prefetch((const char*)(tmp + j - chunk_size - avx512_width), _MM_HINT_T0);
+            
+            // Process first 16 pixels
+            {
+                __m512i v_t0 = _mm512_loadu_si512((__m512i*)(tmp + j - avx512_width + 1));
+                __m512i v_hv_dist = _mm512_set1_epi32(HV_DIST);
+                
+                // Check if we need to update using AVX-512 mask
+                __mmask16 k_update = _mm512_cmpgt_epu32_mask(v_t0, v_hv_dist);
+                
+                if( k_update )
+                {
+                    __m512i v_diag_dist = _mm512_set1_epi32(DIAG_DIST);
+                    
+                    __m512i v_br = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j - avx512_width + 1 + step + 1)), v_diag_dist);
+                    __m512i v_b = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j - avx512_width + 1 + step)), v_hv_dist);
+                    __m512i v_bl = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j - avx512_width + 1 + step - 1)), v_diag_dist);
+                    __m512i v_r = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j - avx512_width + 1 + 1)), v_hv_dist);
+                    
+                    __m512i v_min = _mm512_min_epu32(_mm512_min_epu32(v_br, v_b), _mm512_min_epu32(v_bl, v_r));
+                    v_min = _mm512_min_epu32(v_min, v_t0);
+                    
+                    // Use mask to only update where needed
+                    v_t0 = _mm512_mask_blend_epi32(k_update, v_t0, v_min);
+                    _mm512_storeu_si512((__m512i*)(tmp + j - avx512_width + 1), v_t0);
+                }
+                
+                // Convert to float and store
+                __m512 v_dist = _mm512_mul_ps(_mm512_cvtepi32_ps(v_t0), _mm512_set1_ps(scale));
+                _mm512_storeu_ps(dist + j - avx512_width + 1, v_dist);
+            }
+            
+            // Process second 16 pixels (unrolled)
+            {
+                __m512i v_t0 = _mm512_loadu_si512((__m512i*)(tmp + j - 2*avx512_width + 1));
+                __m512i v_hv_dist = _mm512_set1_epi32(HV_DIST);
+                
+                __mmask16 k_update = _mm512_cmpgt_epu32_mask(v_t0, v_hv_dist);
+                
+                if( k_update )
+                {
+                    __m512i v_diag_dist = _mm512_set1_epi32(DIAG_DIST);
+                    
+                    __m512i v_br = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j - 2*avx512_width + 1 + step + 1)), v_diag_dist);
+                    __m512i v_b = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j - 2*avx512_width + 1 + step)), v_hv_dist);
+                    __m512i v_bl = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j - 2*avx512_width + 1 + step - 1)), v_diag_dist);
+                    __m512i v_r = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j - 2*avx512_width + 1 + 1)), v_hv_dist);
+                    
+                    __m512i v_min = _mm512_min_epu32(_mm512_min_epu32(v_br, v_b), _mm512_min_epu32(v_bl, v_r));
+                    v_min = _mm512_min_epu32(v_min, v_t0);
+                    
+                    v_t0 = _mm512_mask_blend_epi32(k_update, v_t0, v_min);
+                    _mm512_storeu_si512((__m512i*)(tmp + j - 2*avx512_width + 1), v_t0);
+                }
+                
+                __m512 v_dist = _mm512_mul_ps(_mm512_cvtepi32_ps(v_t0), _mm512_set1_ps(scale));
+                _mm512_storeu_ps(dist + j - 2*avx512_width + 1, v_dist);
+            }
+        }
+        
+        // Process remaining with single AVX-512 vector
+        for( ; j >= avx512_width - 1; j -= avx512_width )
+        {
+            __m512i v_t0 = _mm512_loadu_si512((__m512i*)(tmp + j - avx512_width + 1));
+            __m512i v_hv_dist = _mm512_set1_epi32(HV_DIST);
+            
+            __mmask16 k_update = _mm512_cmpgt_epu32_mask(v_t0, v_hv_dist);
+            
+            if( k_update )
+            {
+                __m512i v_diag_dist = _mm512_set1_epi32(DIAG_DIST);
+                
+                __m512i v_br = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j - avx512_width + 1 + step + 1)), v_diag_dist);
+                __m512i v_b = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j - avx512_width + 1 + step)), v_hv_dist);
+                __m512i v_bl = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j - avx512_width + 1 + step - 1)), v_diag_dist);
+                __m512i v_r = _mm512_add_epi32(_mm512_loadu_si512((__m512i*)(tmp + j - avx512_width + 1 + 1)), v_hv_dist);
+                
+                __m512i v_min = _mm512_min_epu32(_mm512_min_epu32(v_br, v_b), _mm512_min_epu32(v_bl, v_r));
+                v_min = _mm512_min_epu32(v_min, v_t0);
+                
+                v_t0 = _mm512_mask_blend_epi32(k_update, v_t0, v_min);
+                _mm512_storeu_si512((__m512i*)(tmp + j - avx512_width + 1), v_t0);
+            }
+            
+            __m512 v_dist = _mm512_mul_ps(_mm512_cvtepi32_ps(v_t0), _mm512_set1_ps(scale));
+            _mm512_storeu_ps(dist + j - avx512_width + 1, v_dist);
+        }
+#else
+        // Scalar processing from right to left until aligned
+        for( ; j >= width - (width % simd_width) && j >= 0; j-- )
+        {
+            unsigned int t0 = tmp[j];
+            if( t0 > HV_DIST )
+            {
+                unsigned int t = tmp[j+step+1] + DIAG_DIST;
+                if( t0 > t ) t0 = t;
+                t = tmp[j+step] + HV_DIST;
+                if( t0 > t ) t0 = t;
+                t = tmp[j+step-1] + DIAG_DIST;
+                if( t0 > t ) t0 = t;
+                t = tmp[j+1] + HV_DIST;
+                if( t0 > t ) t0 = t;
+                tmp[j] = t0;
+            }
+            dist[j] = (float)(t0 * scale);
+        }
+        
+        // SIMD processing
+        for( ; j >= simd_width - 1; j -= simd_width )
+        {
+            v_uint32 v_t0 = vx_load(tmp + j - simd_width + 1);
+            v_uint32 v_hv_dist = v_setall(HV_DIST);
+            
+            // Check if we need to update
+            v_uint32 v_mask = v_t0 > v_hv_dist;
+            
+            if( v_check_any(v_mask) )
+            {
+                v_uint32 v_br = vx_load(tmp + j + step + 1 - simd_width + 1) + v_setall(DIAG_DIST);
+                v_uint32 v_b = vx_load(tmp + j + step - simd_width + 1) + v_hv_dist;
+                v_uint32 v_bl = vx_load(tmp + j + step - 1 - simd_width + 1) + v_setall(DIAG_DIST);
+                v_uint32 v_r = vx_load(tmp + j + 1 - simd_width + 1) + v_hv_dist;
+                
+                v_uint32 v_min = v_min(v_min(v_br, v_b), v_min(v_bl, v_r));
+                v_min = v_min(v_min, v_t0);
+                
+                v_store(tmp + j - simd_width + 1, v_min);
+                v_t0 = v_min;
+            }
+            
+            // Convert to float and store
+            v_float32 v_dist = v_cvt_f32(v_reinterpret_as_s32(v_t0)) * v_scale;
+            v_store(dist + j - simd_width + 1, v_dist);
+        }
+#endif
+        
+        // Process remaining pixels
+        for( ; j >= 0; j-- )
+        {
+            unsigned int t0 = tmp[j];
+            if( t0 > HV_DIST )
+            {
+                unsigned int t = tmp[j+step+1] + DIAG_DIST;
+                if( t0 > t ) t0 = t;
+                t = tmp[j+step] + HV_DIST;
+                if( t0 > t ) t0 = t;
+                t = tmp[j+step-1] + DIAG_DIST;
+                if( t0 > t ) t0 = t;
+                t = tmp[j+1] + HV_DIST;
+                if( t0 > t ) t0 = t;
+                tmp[j] = t0;
+            }
+            dist[j] = (float)(t0 * scale);
+        }
+        
+        dist -= dststep;
+    }
+}
+#endif
+
 
 static void
 distanceTransform_3x3( const Mat& _src, Mat& _temp, Mat& _dist, const float* metrics )
@@ -86,6 +454,14 @@ distanceTransform_3x3( const Mat& _src, Mat& _temp, Mat& _dist, const float* met
 
     initTopBottom( _temp, BORDER, DIST_MAX );
 
+#if CV_SIMD
+    // Use SIMD optimized version if available
+    unsigned int* tmp = (unsigned int*)(temp + BORDER*step) + BORDER;
+    distanceTransform_3x3_forward_simd(src, tmp, size.width, size.height, srcstep, step, HV_DIST, DIAG_DIST, DIST_MAX);
+    
+    float* d = (float*)dist;
+    distanceTransform_3x3_backward_simd(tmp, d, size.width, size.height, step, dststep, HV_DIST, DIAG_DIST, scale);
+#else
     // forward pass
     unsigned int* tmp = (unsigned int*)(temp + BORDER*step) + BORDER;
     const uchar* s = src;
@@ -139,6 +515,7 @@ distanceTransform_3x3( const Mat& _src, Mat& _temp, Mat& _dist, const float* met
         }
         d -= dststep;
     }
+#endif
 }
 
 
