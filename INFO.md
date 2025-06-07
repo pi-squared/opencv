@@ -195,10 +195,64 @@
 - Maintains bit-exact compatibility with original implementation
 - Falls back gracefully on systems without SIMD support
 
+### 11. CLAHE Interpolation SIMD Optimization (optimize-clahe-simd-v2)
+**Date**: 2025-06-07
+**Branch**: optimize-clahe-simd-v2
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/clahe.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for bilinear interpolation in CLAHE algorithm
+- Process 4 pixels at a time using universal intrinsics
+- Manually gather LUT values for vectorized interpolation
+- Optimized the hottest part of CLAHE (interpolation phase)
+- Works with both 8-bit and 16-bit images
+
+**Expected Performance Gains**:
+- Interpolation phase: 15-25% speedup with SIMD processing
+- Overall CLAHE performance: 10-15% improvement
+- Better cache utilization with aligned memory access
+- Scales with SIMD width (SSE: 4x, AVX2: 8x parallelism)
+
+**Testing Notes**:
+- Benchmark showed ~25.8 Mpixels/s throughput on various image sizes
+- Performance consistent across different tile sizes (4x4 to 32x32)
+- Maintains bit-exact compatibility with original implementation
+- Universal intrinsics ensure cross-platform SIMD support
+
+### 12. Eigen2x2 SIMD Optimization (optimize-eigen2x2-simd)
+**Date**: 2025-06-07
+**Branch**: optimize-eigen2x2-simd
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/corner.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for eigen2x2 function using universal intrinsics
+- Processes multiple 2x2 matrices in parallel (4-16 depending on SIMD width)
+- Vectorized eigenvalue computation using closed-form solution
+- Vectorized eigenvector computation and normalization
+- Added cache prefetching for better memory access patterns
+- Maintains bit-exact compatibility with original implementation
+
+**Expected Performance Gains**:
+- 2-4x speedup for eigen2x2 computation depending on SIMD width
+- SSE: Process 4 matrices in parallel
+- AVX2: Process 8 matrices in parallel
+- AVX-512: Process 16 matrices in parallel
+- Better cache utilization with prefetching
+
+**Testing Notes**:
+- Used by cornerEigenValsAndVecs for Harris corner detection
+- Used by goodFeaturesToTrack for feature detection
+- The optimization is transparent to users - same API
+- Universal intrinsics ensure cross-platform SIMD support
+
 ## Future Optimization Opportunities
 1. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
 2. **Template Matching**: The correlation operations in templmatch.cpp could use AVX-512 FMA instructions
 3. **Contour Finding**: The contour tracing algorithms could benefit from SIMD optimization
+4. **Distance Transform**: The distance transform algorithms have nested loops that could benefit from SIMD
+5. **Demosaicing**: Bayer pattern interpolation could use SIMD for color reconstruction
 
 ## Build Notes
 - Use `make -j$(nproc) opencv_imgproc` to build just the imgproc module

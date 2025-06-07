@@ -197,6 +197,90 @@ HoughLinesStandard( InputArray src, OutputArray lines, int type,
                      }
              }
     } else {
+#if CV_SIMD
+        // SIMD-optimized accumulator update
+        const int vstep = v_float32::nlanes;
+        int rho_offset = (numrho - 1) / 2;
+        
+        // Process trig tables in batches for better cache usage
+        const int angle_batch = std::min(64, numangle);
+        
+        for( i = 0; i < height; i++ )
+        {
+            const uchar* row = image + i * step;
+            v_float32 v_i = vx_setall_f32((float)i);
+            
+            // Process edge pixels more efficiently
+            j = 0;
+            
+            // Find and process edge pixels
+            for( ; j < width; j++ )
+            {
+                if( row[j] != 0 )
+                {
+                    v_float32 v_j = vx_setall_f32((float)j);
+                    
+                    // Process angles in batches
+                    for( int batch_start = 0; batch_start < numangle; batch_start += angle_batch )
+                    {
+                        int batch_end = std::min(batch_start + angle_batch, numangle);
+                        int n = batch_start;
+                        
+                        // Process angles in SIMD chunks within batch
+                        for( ; n <= batch_end - vstep; n += vstep )
+                        {
+                            // Load sin and cos values
+                            v_float32 v_sin = vx_load(tabSin + n);
+                            v_float32 v_cos = vx_load(tabCos + n);
+                            
+                            // Calculate r = j * cos(theta) + i * sin(theta)
+                            v_float32 v_r = v_muladd(v_j, v_cos, v_mul(v_i, v_sin));
+                            
+                            // Round and convert to int
+                            v_int32 v_r_int = v_round(v_r);
+                            v_r_int = v_add(v_r_int, vx_setall_s32(rho_offset));
+                            
+                            // Update accumulator - must be done sequentially due to possible collisions
+                            // Extract values to handle accumulator updates
+                            int r_vals[v_float32::nlanes];
+                            v_store(r_vals, v_r_int);
+                            
+                            // Unroll the accumulator update for better performance
+                            if( vstep >= 4 )
+                            {
+                                accum[(n + 1) * (numrho + 2) + r_vals[0] + 1]++;
+                                accum[(n + 2) * (numrho + 2) + r_vals[1] + 1]++;
+                                accum[(n + 3) * (numrho + 2) + r_vals[2] + 1]++;
+                                accum[(n + 4) * (numrho + 2) + r_vals[3] + 1]++;
+                                
+                                for( int k = 4; k < vstep; k++ )
+                                {
+                                    accum[(n + k + 1) * (numrho + 2) + r_vals[k] + 1]++;
+                                }
+                            }
+                            else
+                            {
+                                for( int k = 0; k < vstep; k++ )
+                                {
+                                    accum[(n + k + 1) * (numrho + 2) + r_vals[k] + 1]++;
+                                }
+                            }
+                        }
+                        
+                        // Process remaining angles in batch
+                        for( ; n < batch_end; n++ )
+                        {
+                            int r = cvRound( j * tabCos[n] + i * tabSin[n] );
+                            r += rho_offset;
+                            accum[(n + 1) * (numrho + 2) + r + 1]++;
+                        }
+                    }
+                }
+            }
+        }
+        vx_cleanup();
+#else
+        // Fallback to scalar implementation
         for( i = 0; i < height; i++ )
             for( j = 0; j < width; j++ )
             {
@@ -208,6 +292,7 @@ HoughLinesStandard( InputArray src, OutputArray lines, int type,
                         accum[(n + 1) * (numrho + 2) + r + 1]++;
                     }
             }
+#endif  // CV_SIMD
      }
 
     // stage 2. find local maximums
