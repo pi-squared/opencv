@@ -665,9 +665,411 @@ struct RemapVec_8u
     }
 };
 
+// SIMD optimization for 16-bit unsigned images
+template<bool isRelative>
+struct RemapVec_16u
+{
+    int operator()( const Mat& _src, void* _dst, const short* XY,
+                    const ushort* FXY, const void* _wtab, int width, const Point& _offset ) const
+    {
+        int cn = _src.channels(), x = 0, sstep = (int)(_src.step/sizeof(ushort));
+        if( (cn != 1 && cn != 3 && cn != 4) || sstep >= 0x8000 )
+            return 0;
+
+        const ushort *S0 = _src.ptr<ushort>(), *S1 = _src.ptr<ushort>(1);
+        const float* wtab = (const float*)_wtab;
+        ushort* D = (ushort*)_dst;
+        
+        const short _rel_offset_x = static_cast<short>(_offset.x);
+        const short _rel_offset_y = static_cast<short>(_offset.y);
+        
+        if( cn == 1 )
+        {
+            v_float32x4 v_zero = v_setzero_f32();
+            for( ; x <= width - 4; x += 4 )
+            {
+                v_int16x8 _xy = v_load(XY + x*2);
+                if (isRelative)
+                {
+                    v_int16x8 v_offset(x+_rel_offset_x, _rel_offset_y, 
+                                      x+1+_rel_offset_x, _rel_offset_y,
+                                      x+2+_rel_offset_x, _rel_offset_y,
+                                      x+3+_rel_offset_x, _rel_offset_y);
+                    _xy = v_add(_xy, v_offset);
+                }
+                
+                // Extract coordinates
+                int sx[4], sy[4];
+                v_int32x4 xy0, xy1;
+                v_expand(_xy, xy0, xy1);
+                int CV_DECL_ALIGNED(16) ixy0[4], ixy1[4];
+                v_store(ixy0, xy0);
+                v_store(ixy1, xy1);
+                
+                sx[0] = ixy0[0]; sy[0] = ixy0[1];
+                sx[1] = ixy0[2]; sy[1] = ixy0[3];
+                sx[2] = ixy1[0]; sy[2] = ixy1[1];
+                sx[3] = ixy1[2]; sy[3] = ixy1[3];
+                
+                // Load and interpolate each pixel
+                float dst_arr[4];
+                for(int i = 0; i < 4; i++)
+                {
+                    const float* w = wtab + FXY[x+i]*4;
+                    const ushort* S = S0 + sy[i]*sstep + sx[i];
+                    dst_arr[i] = S[0]*w[0] + S[1]*w[1] + S[sstep]*w[2] + S[sstep+1]*w[3];
+                }
+                v_float32x4 v_dst = v_load(dst_arr);
+                
+                // Convert and store
+                v_int32x4 v_dst_i = v_round(v_dst);
+                v_uint16x8 v_dst_u16 = v_pack_u(v_dst_i, v_dst_i);
+                v_store_low(D + x, v_dst_u16);
+            }
+        }
+        else if( cn == 3 )
+        {
+            for( ; x <= width - 4; x += 4, D += 12 )
+            {
+                v_int16x8 _xy = v_load(XY + x*2);
+                if (isRelative)
+                {
+                    v_int16x8 v_offset(x+_rel_offset_x, _rel_offset_y,
+                                      x+1+_rel_offset_x, _rel_offset_y,
+                                      x+2+_rel_offset_x, _rel_offset_y,
+                                      x+3+_rel_offset_x, _rel_offset_y);
+                    _xy = v_add(_xy, v_offset);
+                }
+                
+                // Process 4 pixels
+                for(int i = 0; i < 4; i++)
+                {
+                    int sx = ((short*)&_xy)[i*2];
+                    int sy = ((short*)&_xy)[i*2+1];
+                    const float* w = wtab + FXY[x+i]*4;
+                    const ushort* S = S0 + sy*sstep + sx*3;
+                    
+                    float src0[4] = {(float)S[0], (float)S[1], (float)S[2], 0};
+                    float src1[4] = {(float)S[3], (float)S[4], (float)S[5], 0};
+                    float src2[4] = {(float)S[sstep], (float)S[sstep+1], (float)S[sstep+2], 0};
+                    float src3[4] = {(float)S[sstep+3], (float)S[sstep+4], (float)S[sstep+5], 0};
+                    
+                    v_float32x4 v_src0 = v_load(src0);
+                    v_float32x4 v_src1 = v_load(src1);
+                    v_float32x4 v_src2 = v_load(src2);
+                    v_float32x4 v_src3 = v_load(src3);
+                    
+                    v_float32x4 v_w0 = v_setall(w[0]);
+                    v_float32x4 v_w1 = v_setall(w[1]);
+                    v_float32x4 v_w2 = v_setall(w[2]);
+                    v_float32x4 v_w3 = v_setall(w[3]);
+                    
+                    v_float32x4 v_dst = v_muladd(v_src0, v_w0, 
+                                       v_muladd(v_src1, v_w1,
+                                       v_muladd(v_src2, v_w2,
+                                       v_mul(v_src3, v_w3))));
+                    
+                    v_int32x4 v_dst_i = v_round(v_dst);
+                    int dst_i[4];
+                    v_store(dst_i, v_dst_i);
+                    D[i*3] = saturate_cast<ushort>(dst_i[0]);
+                    D[i*3+1] = saturate_cast<ushort>(dst_i[1]);
+                    D[i*3+2] = saturate_cast<ushort>(dst_i[2]);
+                }
+            }
+        }
+        else if( cn == 4 )
+        {
+            for( ; x <= width - 4; x += 4, D += 16 )
+            {
+                v_int16x8 _xy = v_load(XY + x*2);
+                if (isRelative)
+                {
+                    v_int16x8 v_offset(x+_rel_offset_x, _rel_offset_y,
+                                      x+1+_rel_offset_x, _rel_offset_y,
+                                      x+2+_rel_offset_x, _rel_offset_y,
+                                      x+3+_rel_offset_x, _rel_offset_y);
+                    _xy = v_add(_xy, v_offset);
+                }
+                
+                // Process 4 pixels of 4 channels each
+                for(int i = 0; i < 4; i++)
+                {
+                    int sx = ((short*)&_xy)[i*2];
+                    int sy = ((short*)&_xy)[i*2+1];
+                    const float* w = wtab + FXY[x+i]*4;
+                    const ushort* S = S0 + sy*sstep + sx*4;
+                    
+                    // Load 4 ushort values and convert to float
+                    float src0[4] = {(float)S[0], (float)S[1], (float)S[2], (float)S[3]};
+                    float src1[4] = {(float)S[4], (float)S[5], (float)S[6], (float)S[7]};
+                    float src2[4] = {(float)S[sstep], (float)S[sstep+1], (float)S[sstep+2], (float)S[sstep+3]};
+                    float src3[4] = {(float)S[sstep+4], (float)S[sstep+5], (float)S[sstep+6], (float)S[sstep+7]};
+                    
+                    v_float32x4 v_src0 = v_load(src0);
+                    v_float32x4 v_src1 = v_load(src1);
+                    v_float32x4 v_src2 = v_load(src2);
+                    v_float32x4 v_src3 = v_load(src3);
+                    
+                    v_float32x4 v_w0 = v_setall(w[0]);
+                    v_float32x4 v_w1 = v_setall(w[1]);
+                    v_float32x4 v_w2 = v_setall(w[2]);
+                    v_float32x4 v_w3 = v_setall(w[3]);
+                    
+                    v_float32x4 v_dst = v_muladd(v_src0, v_w0, 
+                                       v_muladd(v_src1, v_w1,
+                                       v_muladd(v_src2, v_w2,
+                                       v_mul(v_src3, v_w3))));
+                    
+                    v_int32x4 v_dst_i = v_round(v_dst);
+                    v_pack_u_store(D + i*4, v_pack_u(v_dst_i, v_dst_i));
+                }
+            }
+        }
+        
+        return x;
+    }
+};
+
+// SIMD optimization for 32-bit float images
+template<bool isRelative>
+struct RemapVec_32f
+{
+    int operator()( const Mat& _src, void* _dst, const short* XY,
+                    const ushort* FXY, const void* _wtab, int width, const Point& _offset ) const
+    {
+        int cn = _src.channels(), x = 0, sstep = (int)(_src.step/sizeof(float));
+        if( (cn != 1 && cn != 3 && cn != 4) )
+            return 0;
+
+        const float *S0 = _src.ptr<float>(), *S1 = _src.ptr<float>(1);
+        const float* wtab = (const float*)_wtab;
+        float* D = (float*)_dst;
+        
+        const short _rel_offset_x = static_cast<short>(_offset.x);
+        const short _rel_offset_y = static_cast<short>(_offset.y);
+        
+        if( cn == 1 )
+        {
+            for( ; x <= width - 4; x += 4 )
+            {
+                v_int16x8 _xy = v_load(XY + x*2);
+                if (isRelative)
+                {
+                    v_int16x8 v_offset(x+_rel_offset_x, _rel_offset_y,
+                                      x+1+_rel_offset_x, _rel_offset_y,
+                                      x+2+_rel_offset_x, _rel_offset_y,
+                                      x+3+_rel_offset_x, _rel_offset_y);
+                    _xy = v_add(_xy, v_offset);
+                }
+                
+                // Extract coordinates
+                int sx[4], sy[4];
+                v_int32x4 xy0, xy1;
+                v_expand(_xy, xy0, xy1);
+                int CV_DECL_ALIGNED(16) ixy0[4], ixy1[4];
+                v_store(ixy0, xy0);
+                v_store(ixy1, xy1);
+                
+                sx[0] = ixy0[0]; sy[0] = ixy0[1];
+                sx[1] = ixy0[2]; sy[1] = ixy0[3];
+                sx[2] = ixy1[0]; sy[2] = ixy1[1];
+                sx[3] = ixy1[2]; sy[3] = ixy1[3];
+                
+                // Process 4 pixels
+                float dst_arr[4];
+                for(int i = 0; i < 4; i++)
+                {
+                    const float* w = wtab + FXY[x+i]*4;
+                    const float* S = S0 + sy[i]*sstep + sx[i];
+                    
+                    dst_arr[i] = S[0]*w[0] + S[1]*w[1] + S[sstep]*w[2] + S[sstep+1]*w[3];
+                }
+                v_float32x4 v_dst = v_load(dst_arr);
+                v_store(D + x, v_dst);
+            }
+        }
+        else if( cn == 3 )
+        {
+            for( ; x <= width - 2; x += 2, D += 6 )
+            {
+                v_int16x8 _xy = v_load_low(XY + x*2);
+                if (isRelative)
+                {
+                    v_int16x8 v_offset(x+_rel_offset_x, _rel_offset_y,
+                                      x+1+_rel_offset_x, _rel_offset_y, 0, 0, 0, 0);
+                    _xy = v_add(_xy, v_offset);
+                }
+                
+                // Process 2 pixels
+                for(int i = 0; i < 2; i++)
+                {
+                    int sx = ((short*)&_xy)[i*2];
+                    int sy = ((short*)&_xy)[i*2+1];
+                    const float* w = wtab + FXY[x+i]*4;
+                    const float* S = S0 + sy*sstep + sx*3;
+                    
+                    v_float32x4 v_w = v_load(w);
+                    
+                    // Load source pixels
+                    v_float32x4 v_src00 = v_load(S);
+                    v_float32x4 v_src01 = v_load(S + 3);
+                    v_float32x4 v_src10 = v_load(S + sstep);
+                    v_float32x4 v_src11 = v_load(S + sstep + 3);
+                    
+                    // Interpolate
+                    v_float32x4 v_w0 = v_setall(w[0]);
+                    v_float32x4 v_w1 = v_setall(w[1]);
+                    v_float32x4 v_w2 = v_setall(w[2]);
+                    v_float32x4 v_w3 = v_setall(w[3]);
+                    v_float32x4 v_dst0 = v_muladd(v_src00, v_w0,
+                                        v_muladd(v_src01, v_w1,
+                                        v_muladd(v_src10, v_w2,
+                                        v_mul(v_src11, v_w3))));
+                    
+                    v_store_low(D + i*3, v_dst0);
+                }
+            }
+        }
+        else if( cn == 4 )
+        {
+            for( ; x <= width - 4; x += 4, D += 16 )
+            {
+                v_int16x8 _xy = v_load(XY + x*2);
+                if (isRelative)
+                {
+                    v_int16x8 v_offset(x+_rel_offset_x, _rel_offset_y,
+                                      x+1+_rel_offset_x, _rel_offset_y,
+                                      x+2+_rel_offset_x, _rel_offset_y,
+                                      x+3+_rel_offset_x, _rel_offset_y);
+                    _xy = v_add(_xy, v_offset);
+                }
+                
+                // Process 4 pixels
+                for(int i = 0; i < 4; i++)
+                {
+                    int sx = ((short*)&_xy)[i*2];
+                    int sy = ((short*)&_xy)[i*2+1];
+                    const float* w = wtab + FXY[x+i]*4;
+                    const float* S = S0 + sy*sstep + sx*4;
+                    
+                    v_float32x4 v_w = v_load(w);
+                    v_float32x4 v_src0 = v_load(S);
+                    v_float32x4 v_src1 = v_load(S + 4);
+                    v_float32x4 v_src2 = v_load(S + sstep);
+                    v_float32x4 v_src3 = v_load(S + sstep + 4);
+                    
+                    v_float32x4 v_w0 = v_setall(w[0]);
+                    v_float32x4 v_w1 = v_setall(w[1]);
+                    v_float32x4 v_w2 = v_setall(w[2]);
+                    v_float32x4 v_w3 = v_setall(w[3]);
+                    v_float32x4 v_dst = v_muladd(v_src0, v_w0,
+                                       v_muladd(v_src1, v_w1,
+                                       v_muladd(v_src2, v_w2,
+                                       v_mul(v_src3, v_w3))));
+                    
+                    v_store(D + i*4, v_dst);
+                }
+            }
+        }
+        
+        return x;
+    }
+};
+
+// Additional optimization opportunities exist for AVX-512
+// but are commented out for now to ensure compatibility
+/*
+#if CV_TRY_AVX512_SKX  
+template<bool isRelative>
+struct RemapVec_32f_avx512
+{
+    int operator()( const Mat& _src, void* _dst, const short* XY,
+                    const ushort* FXY, const void* _wtab, int width, const Point& _offset ) const
+    {
+        CV_INSTRUMENT_REGION();
+        
+        int cn = _src.channels(), x = 0, sstep = (int)(_src.step/sizeof(float));
+        if( (cn != 1 && cn != 3 && cn != 4) )
+            return 0;
+
+        const float *S0 = _src.ptr<float>(), *S1 = _src.ptr<float>(1);
+        const float* wtab = (const float*)_wtab;
+        float* D = (float*)_dst;
+        
+        const short _rel_offset_x = static_cast<short>(_offset.x);
+        const short _rel_offset_y = static_cast<short>(_offset.y);
+        
+        if( cn == 1 )
+        {
+            // Process 16 pixels at once with AVX-512
+            for( ; x <= width - 16; x += 16 )
+            {
+                // Load coordinates for 16 pixels
+                __m256i xy0 = _mm256_loadu_si256((__m256i*)(XY + x*2));
+                __m256i xy1 = _mm256_loadu_si256((__m256i*)(XY + x*2 + 16));
+                
+                if (isRelative)
+                {
+                    __m256i offset0 = _mm256_setr_epi16(
+                        x+_rel_offset_x, _rel_offset_y, x+1+_rel_offset_x, _rel_offset_y,
+                        x+2+_rel_offset_x, _rel_offset_y, x+3+_rel_offset_x, _rel_offset_y,
+                        x+4+_rel_offset_x, _rel_offset_y, x+5+_rel_offset_x, _rel_offset_y,
+                        x+6+_rel_offset_x, _rel_offset_y, x+7+_rel_offset_x, _rel_offset_y);
+                    __m256i offset1 = _mm256_setr_epi16(
+                        x+8+_rel_offset_x, _rel_offset_y, x+9+_rel_offset_x, _rel_offset_y,
+                        x+10+_rel_offset_x, _rel_offset_y, x+11+_rel_offset_x, _rel_offset_y,
+                        x+12+_rel_offset_x, _rel_offset_y, x+13+_rel_offset_x, _rel_offset_y,
+                        x+14+_rel_offset_x, _rel_offset_y, x+15+_rel_offset_x, _rel_offset_y);
+                    xy0 = _mm256_add_epi16(xy0, offset0);
+                    xy1 = _mm256_add_epi16(xy1, offset1);
+                }
+                
+                // Extract coordinates and process
+                alignas(32) short coords0[16], coords1[16];
+                _mm256_store_si256((__m256i*)coords0, xy0);
+                _mm256_store_si256((__m256i*)coords1, xy1);
+                
+                __m512 result = _mm512_setzero_ps();
+                
+                // Process 16 pixels
+                for(int i = 0; i < 8; i++)
+                {
+                    int sx = coords0[i*2];
+                    int sy = coords0[i*2+1];
+                    const float* w = wtab + FXY[x+i]*4;
+                    const float* S = S0 + sy*sstep + sx;
+                    
+                    float val = S[0]*w[0] + S[1]*w[1] + S[sstep]*w[2] + S[sstep+1]*w[3];
+                    result = _mm512_mask_blend_ps(1 << i, result, _mm512_set1_ps(val));
+                }
+                
+                for(int i = 0; i < 8; i++)
+                {
+                    int sx = coords1[i*2];
+                    int sy = coords1[i*2+1];
+                    const float* w = wtab + FXY[x+8+i]*4;
+                    const float* S = S0 + sy*sstep + sx;
+                    
+                    float val = S[0]*w[0] + S[1]*w[1] + S[sstep]*w[2] + S[sstep+1]*w[3];
+                    result = _mm512_mask_blend_ps(1 << (i+8), result, _mm512_set1_ps(val));
+                }
+                
+                _mm512_storeu_ps(D + x, result);
+            }
+        }
+        
+        return x;
+    }
+};
+#endif
+*/
+
 #else
 
 template<bool isRelative> using RemapVec_8u = RemapNoVec<isRelative>;
+template<bool isRelative> using RemapVec_16u = RemapNoVec<isRelative>;
+template<bool isRelative> using RemapVec_32f = RemapNoVec<isRelative>;
 
 #endif
 
@@ -1650,16 +2052,16 @@ void cv::remap( InputArray _src, OutputArray _dst,
     {
         {
             remapBilinear<FixedPtCast<int, uchar, INTER_REMAP_COEF_BITS>, RemapVec_8u<false>, short, false>, 0,
-            remapBilinear<Cast<float, ushort>, RemapNoVec<false>, float, false>,
+            remapBilinear<Cast<float, ushort>, RemapVec_16u<false>, float, false>,
             remapBilinear<Cast<float, short>, RemapNoVec<false>, float, false>, 0,
-            remapBilinear<Cast<float, float>, RemapNoVec<false>, float, false>,
+            remapBilinear<Cast<float, float>, RemapVec_32f<false>, float, false>,
             remapBilinear<Cast<double, double>, RemapNoVec<false>, float, false>, 0
         },
         {
             remapBilinear<FixedPtCast<int, uchar, INTER_REMAP_COEF_BITS>, RemapVec_8u<true>, short, true>, 0,
-            remapBilinear<Cast<float, ushort>, RemapNoVec<true>, float, true>,
+            remapBilinear<Cast<float, ushort>, RemapVec_16u<true>, float, true>,
             remapBilinear<Cast<float, short>, RemapNoVec<true>, float, true>, 0,
-            remapBilinear<Cast<float, float>, RemapNoVec<true>, float, true>,
+            remapBilinear<Cast<float, float>, RemapVec_32f<true>, float, true>,
             remapBilinear<Cast<double, double>, RemapNoVec<true>, float, true>, 0
         }
     };
