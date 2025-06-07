@@ -663,7 +663,7 @@ approxPolyDP_( const Point_<T>* src_contour, int count0, Point_<T>* dst_contour,
 
 #if CV_SIMD
             // Use SIMD optimization for float points
-            if (std::is_same<T, float>::value && slice.end - pos > v_float32::nlanes)
+            if (std::is_same<T, float>::value && (slice.end - pos) >= v_float32::nlanes)
             {
                 int max_idx_simd = -1;
                 calcDistancesSIMD_32f((const Point2f*)src_contour, pos, slice.end, count,
