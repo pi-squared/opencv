@@ -42,6 +42,7 @@
 
 #include "precomp.hpp"
 #include "opencl_kernels_imgproc.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 // ----------------------------------------------------------------------
 // CLAHE
@@ -297,7 +298,85 @@ namespace
             const T* lutPlane1 = lut_.ptr<T>(ty1 * tilesX_);
             const T* lutPlane2 = lut_.ptr<T>(ty2 * tilesX_);
 
-            for (int x = 0; x < src_.cols; ++x)
+            int x = 0;
+
+#if CV_SIMD
+            // SIMD optimization for the interpolation loop
+            // Process 4 pixels at a time for better performance
+            const int vecWidth = 4;
+            cv::v_float32 v_ya1 = cv::vx_setall_f32(ya1);
+            cv::v_float32 v_ya = cv::vx_setall_f32(ya);
+            
+            for (; x <= src_.cols - vecWidth; x += vecWidth)
+            {
+                // Load source values and convert to indices
+                int srcVal0 = srcRow[x + 0] >> shift;
+                int srcVal1 = srcRow[x + 1] >> shift;
+                int srcVal2 = srcRow[x + 2] >> shift;
+                int srcVal3 = srcRow[x + 3] >> shift;
+                
+                // Compute indices
+                int ind1_0 = ind1_p[x + 0] + srcVal0;
+                int ind2_0 = ind2_p[x + 0] + srcVal0;
+                int ind1_1 = ind1_p[x + 1] + srcVal1;
+                int ind2_1 = ind2_p[x + 1] + srcVal1;
+                int ind1_2 = ind1_p[x + 2] + srcVal2;
+                int ind2_2 = ind2_p[x + 2] + srcVal2;
+                int ind1_3 = ind1_p[x + 3] + srcVal3;
+                int ind2_3 = ind2_p[x + 3] + srcVal3;
+                
+                // Load pre-computed weights
+                cv::v_float32 v_xa1 = cv::vx_load(xa1_p + x);
+                cv::v_float32 v_xa = cv::vx_load(xa_p + x);
+                
+                // Gather LUT values - manual gather since no gather instruction in universal intrinsics
+                float lut1_vals1[4] = {(float)lutPlane1[ind1_0], (float)lutPlane1[ind1_1], 
+                                       (float)lutPlane1[ind1_2], (float)lutPlane1[ind1_3]};
+                float lut1_vals2[4] = {(float)lutPlane1[ind2_0], (float)lutPlane1[ind2_1], 
+                                       (float)lutPlane1[ind2_2], (float)lutPlane1[ind2_3]};
+                float lut2_vals1[4] = {(float)lutPlane2[ind1_0], (float)lutPlane2[ind1_1], 
+                                       (float)lutPlane2[ind1_2], (float)lutPlane2[ind1_3]};
+                float lut2_vals2[4] = {(float)lutPlane2[ind2_0], (float)lutPlane2[ind2_1], 
+                                       (float)lutPlane2[ind2_2], (float)lutPlane2[ind2_3]};
+                
+                cv::v_float32 v_lut1_ind1 = cv::vx_load(lut1_vals1);
+                cv::v_float32 v_lut1_ind2 = cv::vx_load(lut1_vals2);
+                cv::v_float32 v_lut2_ind1 = cv::vx_load(lut2_vals1);
+                cv::v_float32 v_lut2_ind2 = cv::vx_load(lut2_vals2);
+                
+                // Compute bilinear interpolation
+                cv::v_float32 v_interp1 = cv::v_add(cv::v_mul(v_lut1_ind1, v_xa1), cv::v_mul(v_lut1_ind2, v_xa));
+                cv::v_float32 v_interp2 = cv::v_add(cv::v_mul(v_lut2_ind1, v_xa1), cv::v_mul(v_lut2_ind2, v_xa));
+                cv::v_float32 v_res = cv::v_add(cv::v_mul(v_interp1, v_ya1), cv::v_mul(v_interp2, v_ya));
+                
+                // Store results
+                if (std::is_same<T, uchar>::value)
+                {
+                    // Convert and saturate to uchar
+                    cv::v_int32 v_res_i32 = cv::v_round(v_res);
+                    int CV_DECL_ALIGNED(16) res_arr[4];
+                    cv::v_store_aligned(res_arr, v_res_i32);
+                    dstRow[x + 0] = cv::saturate_cast<uchar>(res_arr[0]) << shift;
+                    dstRow[x + 1] = cv::saturate_cast<uchar>(res_arr[1]) << shift;
+                    dstRow[x + 2] = cv::saturate_cast<uchar>(res_arr[2]) << shift;
+                    dstRow[x + 3] = cv::saturate_cast<uchar>(res_arr[3]) << shift;
+                }
+                else // ushort
+                {
+                    // Convert and saturate to ushort
+                    cv::v_int32 v_res_i32 = cv::v_round(v_res);
+                    int CV_DECL_ALIGNED(16) res_arr[4];
+                    cv::v_store_aligned(res_arr, v_res_i32);
+                    ((ushort*)dstRow)[x + 0] = cv::saturate_cast<ushort>(res_arr[0]) << shift;
+                    ((ushort*)dstRow)[x + 1] = cv::saturate_cast<ushort>(res_arr[1]) << shift;
+                    ((ushort*)dstRow)[x + 2] = cv::saturate_cast<ushort>(res_arr[2]) << shift;
+                    ((ushort*)dstRow)[x + 3] = cv::saturate_cast<ushort>(res_arr[3]) << shift;
+                }
+            }
+#endif
+
+            // Process remaining pixels
+            for (; x < src_.cols; ++x)
             {
                 int srcVal = srcRow[x] >> shift;
 
