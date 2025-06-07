@@ -17,6 +17,7 @@
  */
 #include "precomp.hpp"
 #include <iostream>
+#include "opencv2/core/hal/intrin.hpp"
 
 #ifdef _MSC_VER
 #pragma warning( disable: 4305 )  // FIXIT remove this
@@ -766,8 +767,63 @@ namespace colormap
                 for(int row = range.start ; row<range.end ; ++row)  {
                     const unsigned char* srcRow = srcGray.ptr<unsigned char>(row);
                     lut_pixel_t* dstRow = dstMat.ptr<lut_pixel_t>(row);
-                    for(int col = 0 ; col<cols ; ++col)
-                        *dstRow++ = srcLUT[*srcRow++];
+                    int col = 0;
+                    
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+                    // SIMD optimized path for CV_8UC1
+                    const int vecWidth = VTraits<v_uint8>::vlanes();
+                    
+                    // Process 4x unrolled for better ILP (Instruction Level Parallelism)
+                    for(; col <= cols - 4*vecWidth; col += 4*vecWidth) {
+                        // Load 4 vectors at once
+                        v_uint8 indices0 = vx_load(srcRow + col);
+                        v_uint8 indices1 = vx_load(srcRow + col + vecWidth);
+                        v_uint8 indices2 = vx_load(srcRow + col + 2*vecWidth);
+                        v_uint8 indices3 = vx_load(srcRow + col + 3*vecWidth);
+                        
+                        // Perform LUT lookups
+                        // For 256-entry 8-bit LUT, we use manual gather
+                        uchar CV_DECL_ALIGNED(CV_SIMD_WIDTH) temp0[VTraits<v_uint8>::max_nlanes];
+                        uchar CV_DECL_ALIGNED(CV_SIMD_WIDTH) temp1[VTraits<v_uint8>::max_nlanes];
+                        uchar CV_DECL_ALIGNED(CV_SIMD_WIDTH) temp2[VTraits<v_uint8>::max_nlanes];
+                        uchar CV_DECL_ALIGNED(CV_SIMD_WIDTH) temp3[VTraits<v_uint8>::max_nlanes];
+                        
+                        v_store_aligned(temp0, indices0);
+                        v_store_aligned(temp1, indices1);
+                        v_store_aligned(temp2, indices2);
+                        v_store_aligned(temp3, indices3);
+                        
+                        // Unroll the inner loop for better performance
+                        for(int i = 0; i < vecWidth; i++) {
+                            temp0[i] = srcLUT[temp0[i]];
+                            temp1[i] = srcLUT[temp1[i]];
+                            temp2[i] = srcLUT[temp2[i]];
+                            temp3[i] = srcLUT[temp3[i]];
+                        }
+                        
+                        // Load and store results
+                        v_store(dstRow + col, vx_load_aligned(temp0));
+                        v_store(dstRow + col + vecWidth, vx_load_aligned(temp1));
+                        v_store(dstRow + col + 2*vecWidth, vx_load_aligned(temp2));
+                        v_store(dstRow + col + 3*vecWidth, vx_load_aligned(temp3));
+                    }
+                    
+                    // Process remaining vectors
+                    for(; col <= cols - vecWidth; col += vecWidth) {
+                        v_uint8 indices = vx_load(srcRow + col);
+                        uchar CV_DECL_ALIGNED(CV_SIMD_WIDTH) temp[VTraits<v_uint8>::max_nlanes];
+                        v_store_aligned(temp, indices);
+                        
+                        for(int i = 0; i < vecWidth; i++) {
+                            temp[i] = srcLUT[temp[i]];
+                        }
+                        
+                        v_store(dstRow + col, vx_load_aligned(temp));
+                    }
+#endif
+                    // Process remaining pixels
+                    for(; col < cols; ++col)
+                        dstRow[col] = srcLUT[srcRow[col]];
                 }
             };
             parallel_for_(all, body, rowsPacketsCount);
@@ -779,8 +835,46 @@ namespace colormap
                 for(int row = range.start ; row<range.end ; ++row)  {
                     const unsigned char* srcRow = srcGray.ptr<unsigned char>(row);
                     lut_pixel_t* dstRow = dstMat.ptr<lut_pixel_t>(row);
-                    for(int col = 0 ; col<cols ; ++col)
-                        *dstRow++ = srcLUT[*srcRow++];
+                    int col = 0;
+                    
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+                    // SIMD optimized path for CV_8UC3
+                    const int vecWidth = VTraits<v_uint8>::vlanes();
+                    
+                    // Process 2x unrolled for better performance with 3-channel data
+                    for(; col <= cols - 2*vecWidth; col += 2*vecWidth) {
+                        // Load 2 vectors at once
+                        v_uint8 indices0 = vx_load(srcRow + col);
+                        v_uint8 indices1 = vx_load(srcRow + col + vecWidth);
+                        
+                        // For Vec3b LUT, we need to gather 3-channel values
+                        uchar CV_DECL_ALIGNED(CV_SIMD_WIDTH) temp_idx0[VTraits<v_uint8>::max_nlanes];
+                        uchar CV_DECL_ALIGNED(CV_SIMD_WIDTH) temp_idx1[VTraits<v_uint8>::max_nlanes];
+                        
+                        v_store_aligned(temp_idx0, indices0);
+                        v_store_aligned(temp_idx1, indices1);
+                        
+                        // Unroll for better performance
+                        for(int i = 0; i < vecWidth; i++) {
+                            dstRow[col + i] = srcLUT[temp_idx0[i]];
+                            dstRow[col + vecWidth + i] = srcLUT[temp_idx1[i]];
+                        }
+                    }
+                    
+                    // Process remaining vectors
+                    for(; col <= cols - vecWidth; col += vecWidth) {
+                        v_uint8 indices = vx_load(srcRow + col);
+                        uchar CV_DECL_ALIGNED(CV_SIMD_WIDTH) temp_idx[VTraits<v_uint8>::max_nlanes];
+                        v_store_aligned(temp_idx, indices);
+                        
+                        for(int i = 0; i < vecWidth; i++) {
+                            dstRow[col + i] = srcLUT[temp_idx[i]];
+                        }
+                    }
+#endif
+                    // Process remaining pixels
+                    for(; col < cols; ++col)
+                        dstRow[col] = srcLUT[srcRow[col]];
                 }
             };
             parallel_for_(all, body, rowsPacketsCount);
