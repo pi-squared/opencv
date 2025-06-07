@@ -46,6 +46,10 @@
 #include "opencv2/core/hal/intrin.hpp"
 #include "corner.hpp"
 
+#if defined(__AVX512F__) && CV_AVX512_SKX
+#include <immintrin.h>
+#endif
+
 namespace cv
 {
 
@@ -157,7 +161,102 @@ static void calcHarris( const Mat& _cov, Mat& _dst, double k )
 
 static void eigen2x2( const float* cov, float* dst, int n )
 {
-    for( int j = 0; j < n; j++ )
+    int j = 0;
+    
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+    const int vec_size = VTraits<v_float32>::vlanes();
+    const v_float32 v_half = vx_setall_f32(0.5f);
+    const v_float32 v_quarter = vx_setall_f32(0.25f);
+    const v_float32 v_small = vx_setall_f32(1e-4f);
+    const v_float32 v_eps = vx_setall_f32(FLT_EPSILON);
+    
+    // Process multiple 2x2 matrices in parallel
+    for( ; j <= n - vec_size; j += vec_size )
+    {
+        // Prefetch next batch of data for better cache performance
+        #if defined(__GNUC__) || defined(__clang__)
+        if (j + vec_size < n)
+            __builtin_prefetch(cov + (j + vec_size)*3, 0, 3);
+        #endif
+        
+        // Load matrix elements
+        v_float32 v_a, v_b, v_c;
+        v_load_deinterleave(cov + j*3, v_a, v_b, v_c);
+        
+        // Compute eigenvalues using closed-form solution
+        // u = (a + c) * 0.5
+        v_float32 v_u = v_mul(v_add(v_a, v_c), v_half);
+        
+        // v = sqrt((a - c)^2 * 0.25 + b^2)
+        v_float32 v_diff = v_sub(v_a, v_c);
+        v_float32 v_v = v_sqrt(v_add(v_mul(v_mul(v_diff, v_diff), v_quarter), v_mul(v_b, v_b)));
+        
+        // l1 = u + v, l2 = u - v
+        v_float32 v_l1 = v_add(v_u, v_v);
+        v_float32 v_l2 = v_sub(v_u, v_v);
+        
+        // Compute eigenvector for l1
+        v_float32 v_x1 = v_b;
+        v_float32 v_y1 = v_sub(v_l1, v_a);
+        v_float32 v_e1 = v_abs(v_x1);
+        
+        // Check for special cases
+        v_float32 v_cond1 = v_lt(v_add(v_e1, v_abs(v_y1)), v_small);
+        v_float32 v_x1_alt = v_sub(v_l1, v_c);
+        v_float32 v_y1_alt = v_b;
+        v_x1 = v_select(v_cond1, v_x1_alt, v_x1);
+        v_y1 = v_select(v_cond1, v_y1_alt, v_y1);
+        
+        // Normalize eigenvector
+        v_float32 v_norm1 = v_invsqrt(v_add(v_add(v_mul(v_x1, v_x1), v_mul(v_y1, v_y1)), v_eps));
+        v_x1 = v_mul(v_x1, v_norm1);
+        v_y1 = v_mul(v_y1, v_norm1);
+        
+        // Compute eigenvector for l2
+        v_float32 v_x2 = v_b;
+        v_float32 v_y2 = v_sub(v_l2, v_a);
+        v_float32 v_e2 = v_abs(v_x2);
+        
+        // Check for special cases
+        v_float32 v_cond2 = v_lt(v_add(v_e2, v_abs(v_y2)), v_small);
+        v_float32 v_x2_alt = v_sub(v_l2, v_c);
+        v_float32 v_y2_alt = v_b;
+        v_x2 = v_select(v_cond2, v_x2_alt, v_x2);
+        v_y2 = v_select(v_cond2, v_y2_alt, v_y2);
+        
+        // Normalize eigenvector
+        v_float32 v_norm2 = v_invsqrt(v_add(v_add(v_mul(v_x2, v_x2), v_mul(v_y2, v_y2)), v_eps));
+        v_x2 = v_mul(v_x2, v_norm2);
+        v_y2 = v_mul(v_y2, v_norm2);
+        
+        // Store results
+        // The output layout is [l1, l2, v1x, v1y, v2x, v2y] for each matrix
+        // We need to extract each lane from the vectors and store in the proper location
+        alignas(32) float l1_buf[vec_size], l2_buf[vec_size];
+        alignas(32) float x1_buf[vec_size], y1_buf[vec_size];
+        alignas(32) float x2_buf[vec_size], y2_buf[vec_size];
+        
+        v_store_aligned(l1_buf, v_l1);
+        v_store_aligned(l2_buf, v_l2);
+        v_store_aligned(x1_buf, v_x1);
+        v_store_aligned(y1_buf, v_y1);
+        v_store_aligned(x2_buf, v_x2);
+        v_store_aligned(y2_buf, v_y2);
+        
+        for (int k = 0; k < vec_size; k++)
+        {
+            dst[6*(j+k) + 0] = l1_buf[k];
+            dst[6*(j+k) + 1] = l2_buf[k];
+            dst[6*(j+k) + 2] = x1_buf[k];
+            dst[6*(j+k) + 3] = y1_buf[k];
+            dst[6*(j+k) + 4] = x2_buf[k];
+            dst[6*(j+k) + 5] = y2_buf[k];
+        }
+    }
+#endif
+    
+    // Process remaining matrices
+    for( ; j < n; j++ )
     {
         double a = cov[j*3];
         double b = cov[j*3+1];
