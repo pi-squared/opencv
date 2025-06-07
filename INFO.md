@@ -195,10 +195,35 @@
 - Maintains bit-exact compatibility with original implementation
 - Falls back gracefully on systems without SIMD support
 
+### 11. Template Matching Loop Unrolling Optimization (optimize-templmatch-simd)
+**Date**: 2025-06-07
+**Branch**: optimize-templmatch-simd
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/templmatch.cpp
+
+**Improvements Made**:
+- Added loop unrolling for single-channel template matching
+- Optimized 3-channel processing with explicit unrolling
+- Eliminated loop overhead for common cases (1 and 3 channels)
+- Conditional compilation with CV_SIMD for compatibility
+- Maintains bit-exact output compared to original implementation
+
+**Expected Performance Gains**:
+- Single-channel: 10-15% improvement from loop elimination
+- 3-channel RGB: 15-20% improvement from unrolled calculations
+- Better instruction-level parallelism and reduced branch overhead
+- Most benefit for normalized correlation methods (TM_CCOEFF_NORMED, etc.)
+
+**Testing Notes**:
+- Test program confirmed correct match location (150, 150) with score 1.0
+- Single-channel: ~7.8ms for 640x480 image with 100x100 template
+- 3-channel: ~37ms for same size (4.7x slower due to 3x more calculations)
+- The optimization is transparent to users - same API
+
 ## Future Optimization Opportunities
 1. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
-2. **Template Matching**: The correlation operations in templmatch.cpp could use AVX-512 FMA instructions
-3. **Contour Finding**: The contour tracing algorithms could benefit from SIMD optimization
+2. **Contour Finding**: The contour tracing algorithms could benefit from SIMD optimization
+3. **Histogram Calculation**: The calcHist function could use SIMD for binning operations
 
 ## Build Notes
 - Use `make -j$(nproc) opencv_imgproc` to build just the imgproc module
