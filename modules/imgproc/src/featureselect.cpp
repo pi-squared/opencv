@@ -43,6 +43,7 @@
 #include "opencl_kernels_imgproc.hpp"
 
 #include "opencv2/core/openvx/ovx_defs.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 #include <cstdio>
 #include <vector>
@@ -51,6 +52,64 @@
 
 namespace cv
 {
+
+#if CV_AVX512_SKX
+// AVX-512 optimized corner collection for better performance
+static void collectCornersAVX512(const Mat& eig, const Mat& tmp, const Mat& mask,
+                                 std::vector<const float*>& tmpCorners, 
+                                 int startY, int endY, int startX, int endX)
+{
+    const int simd_width = 16; // AVX-512 processes 16 floats at once
+    __m512 zero = _mm512_setzero_ps();
+    
+    for( int y = startY; y < endY; y++ )
+    {
+        const float* eig_data = eig.ptr<float>(y);
+        const float* tmp_data = tmp.ptr<float>(y);
+        const uchar* mask_data = mask.data ? mask.ptr<uchar>(y) : nullptr;
+        
+        int x = startX;
+        
+        // AVX-512 vectorized loop
+        for( ; x <= endX - simd_width; x += simd_width )
+        {
+            __m512 eig_vec = _mm512_loadu_ps(eig_data + x);
+            __m512 tmp_vec = _mm512_loadu_ps(tmp_data + x);
+            
+            // Check if val != 0 && val == tmp_data[x]
+            __mmask16 mask = _mm512_cmpneq_ps_mask(eig_vec, zero);
+            mask = _kand_mask16(mask, _mm512_cmpeq_ps_mask(eig_vec, tmp_vec));
+            
+            if( mask_data )
+            {
+                // Load and check mask data
+                __m128i mask_data_vec = _mm_loadu_si128((__m128i*)(mask_data + x));
+                __m512i mask_expanded = _mm512_cvtepu8_epi32(mask_data_vec);
+                __mmask16 mask_nonzero = _mm512_cmpneq_epi32_mask(mask_expanded, _mm512_setzero_si512());
+                mask = _kand_mask16(mask, mask_nonzero);
+            }
+            
+            if( mask )
+            {
+                // Process corners where mask is true
+                for( int i = 0; i < simd_width; i++ )
+                {
+                    if( mask & (1 << i) )
+                        tmpCorners.push_back(eig_data + x + i);
+                }
+            }
+        }
+        
+        // Process remaining elements
+        for( ; x < endX; x++ )
+        {
+            float val = eig_data[x];
+            if( val != 0 && val == tmp_data[x] && (!mask_data || mask_data[x]) )
+                tmpCorners.push_back(eig_data + x);
+        }
+    }
+}
+#endif
 
 struct greaterThanPtr
 {
@@ -421,19 +480,64 @@ void cv::goodFeaturesToTrack( InputArray _image, OutputArray _corners,
 
     // collect list of pointers to features - put them into temporary image
     Mat mask = _mask.getMat();
+    
+#if CV_AVX512_SKX
+    // Use AVX-512 optimized version if available
+    collectCornersAVX512(eig, tmp, mask, tmpCorners, 1, imgsize.height - 1, 1, imgsize.width - 1);
+#else
     for( int y = 1; y < imgsize.height - 1; y++ )
     {
         const float* eig_data = (const float*)eig.ptr(y);
         const float* tmp_data = (const float*)tmp.ptr(y);
         const uchar* mask_data = mask.data ? mask.ptr(y) : 0;
 
+#if CV_SIMD
+        int x = 1;
+        const int simd_width = v_float32::nlanes;
+        v_float32 v_zero = vx_setzero<v_float32>();
+        
+        // Process using SIMD up to the last full vector
+        for( ; x <= imgsize.width - 1 - simd_width; x += simd_width )
+        {
+            v_float32 v_eig = vx_load(eig_data + x);
+            v_float32 v_tmp = vx_load(tmp_data + x);
+            
+            // Check if val != 0 && val == tmp_data[x]
+            v_float32 v_mask = v_ne(v_eig, v_zero) & v_eq(v_eig, v_tmp);
+            
+            if( mask_data )
+            {
+                // Load mask data and expand to float mask
+                v_uint32 v_mask_data = vx_load_expand_q(mask_data + x);
+                v_float32 v_mask_float = v_reinterpret_as_f32(v_ne(v_mask_data, vx_setzero<v_uint32>()));
+                v_mask = v_mask & v_mask_float;
+            }
+            
+            // Extract which elements passed the test
+            int mask_bits = v_signmask(v_mask);
+            if( mask_bits )
+            {
+                // Process each set bit
+                for( int i = 0; i < simd_width; i++ )
+                {
+                    if( mask_bits & (1 << i) )
+                        tmpCorners.push_back(eig_data + x + i);
+                }
+            }
+        }
+        
+        // Process remaining elements
+        for( ; x < imgsize.width - 1; x++ )
+#else
         for( int x = 1; x < imgsize.width - 1; x++ )
+#endif
         {
             float val = eig_data[x];
             if( val != 0 && val == tmp_data[x] && (!mask_data || mask_data[x]) )
                 tmpCorners.push_back(eig_data + x);
         }
     }
+#endif
 
     std::vector<Point2f> corners;
     std::vector<float> cornersQuality;
@@ -492,7 +596,51 @@ void cv::goodFeaturesToTrack( InputArray _image, OutputArray _corners,
 
                     if( m.size() )
                     {
+#if CV_SIMD
+                        // SIMD optimized distance checking
+                        const int simd_width = v_float32::nlanes;
+                        v_float32 v_x = vx_setall_f32((float)x);
+                        v_float32 v_y = vx_setall_f32((float)y);
+                        v_float32 v_minDist = vx_setall_f32(minDistance);
+                        
+                        size_t j = 0;
+                        
+                        // Process multiple points at once when possible
+                        if( m.size() >= simd_width )
+                        {
+                            for( ; j <= m.size() - simd_width; j += simd_width )
+                            {
+                                // Load x and y coordinates of points
+                                float CV_DECL_ALIGNED(CV_SIMD_WIDTH) x_coords[simd_width];
+                                float CV_DECL_ALIGNED(CV_SIMD_WIDTH) y_coords[simd_width];
+                                
+                                for( int k = 0; k < simd_width; k++ )
+                                {
+                                    x_coords[k] = m[j + k].x;
+                                    y_coords[k] = m[j + k].y;
+                                }
+                                
+                                v_float32 v_mx = vx_load_aligned(x_coords);
+                                v_float32 v_my = vx_load_aligned(y_coords);
+                                
+                                v_float32 v_dx = v_sub(v_x, v_mx);
+                                v_float32 v_dy = v_sub(v_y, v_my);
+                                
+                                v_float32 v_dist_sq = v_muladd(v_dx, v_dx, v_mul(v_dy, v_dy));
+                                
+                                if( v_check_any(v_lt(v_dist_sq, v_minDist)) )
+                                {
+                                    good = false;
+                                    goto break_out;
+                                }
+                            }
+                        }
+                        
+                        // Process remaining points
+                        for( ; j < m.size(); j++ )
+#else
                         for(j = 0; j < m.size(); j++)
+#endif
                         {
                             float dx = x - m[j].x;
                             float dy = y - m[j].y;
