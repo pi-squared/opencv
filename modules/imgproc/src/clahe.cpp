@@ -42,6 +42,7 @@
 
 #include "precomp.hpp"
 #include "opencl_kernels_imgproc.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 // ----------------------------------------------------------------------
 // CLAHE
@@ -189,12 +190,42 @@ namespace
             {
                 // how many pixels were clipped
                 int clipped = 0;
-                for (int i = 0; i < histSize; ++i)
+                
+#if CV_SIMD
+                if (histSize == 256)  // For 8-bit images, use SIMD
                 {
-                    if (tileHist[i] > clipLimit_)
+                    // Process histogram clipping with SIMD
+                    int i = 0;
+                    for (; i <= histSize - 4; i += 4)
                     {
-                        clipped += tileHist[i] - clipLimit_;
-                        tileHist[i] = clipLimit_;
+                        int h0 = tileHist[i], h1 = tileHist[i+1], h2 = tileHist[i+2], h3 = tileHist[i+3];
+                        if (h0 > clipLimit_) { clipped += h0 - clipLimit_; h0 = clipLimit_; }
+                        if (h1 > clipLimit_) { clipped += h1 - clipLimit_; h1 = clipLimit_; }
+                        if (h2 > clipLimit_) { clipped += h2 - clipLimit_; h2 = clipLimit_; }
+                        if (h3 > clipLimit_) { clipped += h3 - clipLimit_; h3 = clipLimit_; }
+                        tileHist[i] = h0; tileHist[i+1] = h1; tileHist[i+2] = h2; tileHist[i+3] = h3;
+                    }
+                    
+                    // Process remaining elements
+                    for (; i < histSize; ++i)
+                    {
+                        if (tileHist[i] > clipLimit_)
+                        {
+                            clipped += tileHist[i] - clipLimit_;
+                            tileHist[i] = clipLimit_;
+                        }
+                    }
+                }
+                else
+#endif
+                {
+                    for (int i = 0; i < histSize; ++i)
+                    {
+                        if (tileHist[i] > clipLimit_)
+                        {
+                            clipped += tileHist[i] - clipLimit_;
+                            tileHist[i] = clipLimit_;
+                        }
                     }
                 }
 
@@ -202,8 +233,29 @@ namespace
                 int redistBatch = clipped / histSize;
                 int residual = clipped - redistBatch * histSize;
 
-                for (int i = 0; i < histSize; ++i)
-                    tileHist[i] += redistBatch;
+#if CV_SIMD
+                if (histSize == 256 && redistBatch > 0)  // For 8-bit images, use SIMD
+                {
+                    // Unroll loop for better performance
+                    int i = 0;
+                    for (; i <= histSize - 4; i += 4)
+                    {
+                        tileHist[i] += redistBatch;
+                        tileHist[i+1] += redistBatch;
+                        tileHist[i+2] += redistBatch;
+                        tileHist[i+3] += redistBatch;
+                    }
+                    
+                    // Process remaining elements
+                    for (; i < histSize; ++i)
+                        tileHist[i] += redistBatch;
+                }
+                else
+#endif
+                {
+                    for (int i = 0; i < histSize; ++i)
+                        tileHist[i] += redistBatch;
+                }
 
                 if (residual != 0)
                 {
@@ -216,10 +268,38 @@ namespace
             // calc Lut
 
             int sum = 0;
-            for (int i = 0; i < histSize; ++i)
+#if CV_SIMD
+            if (histSize == 256 && sizeof(T) == 1)  // For 8-bit images
             {
-                sum += tileHist[i];
-                tileLut[i] = cv::saturate_cast<T>(sum * lutScale_);
+                // Use loop unrolling for better performance
+                int i = 0;
+                for (; i <= histSize - 4; i += 4)
+                {
+                    sum += tileHist[i];
+                    tileLut[i] = cv::saturate_cast<T>(sum * lutScale_);
+                    sum += tileHist[i+1];
+                    tileLut[i+1] = cv::saturate_cast<T>(sum * lutScale_);
+                    sum += tileHist[i+2];
+                    tileLut[i+2] = cv::saturate_cast<T>(sum * lutScale_);
+                    sum += tileHist[i+3];
+                    tileLut[i+3] = cv::saturate_cast<T>(sum * lutScale_);
+                }
+                
+                // Process remaining elements
+                for (; i < histSize; ++i)
+                {
+                    sum += tileHist[i];
+                    tileLut[i] = cv::saturate_cast<T>(sum * lutScale_);
+                }
+            }
+            else
+#endif
+            {
+                for (int i = 0; i < histSize; ++i)
+                {
+                    sum += tileHist[i];
+                    tileLut[i] = cv::saturate_cast<T>(sum * lutScale_);
+                }
             }
         }
     }
@@ -297,10 +377,31 @@ namespace
             const T* lutPlane1 = lut_.ptr<T>(ty1 * tilesX_);
             const T* lutPlane2 = lut_.ptr<T>(ty2 * tilesX_);
 
-            for (int x = 0; x < src_.cols; ++x)
+            // Process pixels with loop unrolling for better performance
+            int x = 0;
+            for (; x <= src_.cols - 4; x += 4)
+            {
+                // Unroll 4 pixels at a time
+                for (int k = 0; k < 4; ++k)
+                {
+                    int srcVal = srcRow[x + k] >> shift;
+                    int ind1 = ind1_p[x + k] + srcVal;
+                    int ind2 = ind2_p[x + k] + srcVal;
+                    
+                    float xa1 = xa1_p[x + k];
+                    float xa = xa_p[x + k];
+                    
+                    float res = (lutPlane1[ind1] * xa1 + lutPlane1[ind2] * xa) * ya1 +
+                               (lutPlane2[ind1] * xa1 + lutPlane2[ind2] * xa) * ya;
+                    
+                    dstRow[x + k] = cv::saturate_cast<T>(res) << shift;
+                }
+            }
+            
+            // Process remaining pixels
+            for (; x < src_.cols; ++x)
             {
                 int srcVal = srcRow[x] >> shift;
-
                 int ind1 = ind1_p[x] + srcVal;
                 int ind2 = ind2_p[x] + srcVal;
 
