@@ -539,8 +539,14 @@ calcHist_8u( std::vector<uchar*>& _ptrs, const std::vector<int>& _deltas,
     if( dims == 1 )
     {
         int d0 = deltas[0], step0 = deltas[1];
-        int matH[256] = { 0, };
         const uchar* p0 = (const uchar*)ptrs[0];
+        
+        // Use two partial histograms to reduce cache conflicts
+        // This technique improves performance by reducing memory conflicts
+        // when updating histogram bins
+        int matH[256] = { 0, };
+        int matH2[256] = { 0, };
+        bool usePartialHist = (imsize.width * imsize.height > 65536); // Use for larger images
 
         for( ; imsize.height--; p0 += step0, mask += mstep )
         {
@@ -548,17 +554,106 @@ calcHist_8u( std::vector<uchar*>& _ptrs, const std::vector<int>& _deltas,
             {
                 if( d0 == 1 )
                 {
-                    for( x = 0; x <= imsize.width - 4; x += 4 )
+                    // Improved loop unrolling with 8-way processing
+                    // This reduces loop overhead and improves instruction-level parallelism
+                    if( usePartialHist )
+                    {
+                        // Use partial histograms for better cache performance
+                        for( x = 0; x <= imsize.width - 16; x += 16 )
+                        {
+#if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
+                            // Prefetch next cache line for better memory performance
+                            __builtin_prefetch(p0 + x + 64, 0, 1);
+#endif
+                            // First 8 pixels to histogram 1
+                            int t0 = p0[x], t1 = p0[x+1];
+                            int t2 = p0[x+2], t3 = p0[x+3];
+                            int t4 = p0[x+4], t5 = p0[x+5];
+                            int t6 = p0[x+6], t7 = p0[x+7];
+                            
+                            matH[t0]++; matH[t1]++;
+                            matH[t2]++; matH[t3]++;
+                            matH[t4]++; matH[t5]++;
+                            matH[t6]++; matH[t7]++;
+                            
+                            // Next 8 pixels to histogram 2
+                            t0 = p0[x+8]; t1 = p0[x+9];
+                            t2 = p0[x+10]; t3 = p0[x+11];
+                            t4 = p0[x+12]; t5 = p0[x+13];
+                            t6 = p0[x+14]; t7 = p0[x+15];
+                            
+                            matH2[t0]++; matH2[t1]++;
+                            matH2[t2]++; matH2[t3]++;
+                            matH2[t4]++; matH2[t5]++;
+                            matH2[t6]++; matH2[t7]++;
+                        }
+                        
+                        // Process remaining with single histogram
+                        for( ; x <= imsize.width - 8; x += 8 )
+                        {
+                            int t0 = p0[x], t1 = p0[x+1];
+                            int t2 = p0[x+2], t3 = p0[x+3];
+                            int t4 = p0[x+4], t5 = p0[x+5];
+                            int t6 = p0[x+6], t7 = p0[x+7];
+                            
+                            matH[t0]++; matH[t1]++;
+                            matH[t2]++; matH[t3]++;
+                            matH[t4]++; matH[t5]++;
+                            matH[t6]++; matH[t7]++;
+                        }
+                    }
+                    else
+                    {
+                        // Original 8-way unrolling for smaller images
+                        for( x = 0; x <= imsize.width - 8; x += 8 )
+                        {
+#if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
+                            // Prefetch next cache line for better memory performance
+                            __builtin_prefetch(p0 + x + 64, 0, 1);
+#endif
+                            int t0 = p0[x], t1 = p0[x+1];
+                            int t2 = p0[x+2], t3 = p0[x+3];
+                            int t4 = p0[x+4], t5 = p0[x+5];
+                            int t6 = p0[x+6], t7 = p0[x+7];
+                            
+                            // Update histogram bins
+                            // Interleaving the loads and stores helps hide memory latency
+                            matH[t0]++; matH[t1]++;
+                            matH[t2]++; matH[t3]++;
+                            matH[t4]++; matH[t5]++;
+                            matH[t6]++; matH[t7]++;
+                        }
+                    }
+                    
+                    // Process remaining pixels with 4-way unrolling
+                    for( ; x <= imsize.width - 4; x += 4 )
                     {
                         int t0 = p0[x], t1 = p0[x+1];
+                        int t2 = p0[x+2], t3 = p0[x+3];
                         matH[t0]++; matH[t1]++;
-                        t0 = p0[x+2]; t1 = p0[x+3];
-                        matH[t0]++; matH[t1]++;
+                        matH[t2]++; matH[t3]++;
                     }
                     p0 += x;
                 }
                 else
-                    for( x = 0; x <= imsize.width - 4; x += 4 )
+                {
+                    // Non-continuous data - improved unrolling
+                    for( x = 0; x <= imsize.width - 8; x += 8 )
+                    {
+                        int t0 = p0[0], t1 = p0[d0];
+                        int t2 = p0[d0*2], t3 = p0[d0*3];
+                        int t4 = p0[d0*4], t5 = p0[d0*5];
+                        int t6 = p0[d0*6], t7 = p0[d0*7];
+                        
+                        matH[t0]++; matH[t1]++;
+                        matH[t2]++; matH[t3]++;
+                        matH[t4]++; matH[t5]++;
+                        matH[t6]++; matH[t7]++;
+                        
+                        p0 += d0*8;
+                    }
+                    
+                    for( ; x <= imsize.width - 4; x += 4 )
                     {
                         int t0 = p0[0], t1 = p0[d0];
                         matH[t0]++; matH[t1]++;
@@ -567,6 +662,7 @@ calcHist_8u( std::vector<uchar*>& _ptrs, const std::vector<int>& _deltas,
                         matH[t0]++; matH[t1]++;
                         p0 += d0*2;
                     }
+                }
 
                 for( ; x < imsize.width; x++, p0 += d0 )
                     matH[*p0]++;
@@ -577,6 +673,16 @@ calcHist_8u( std::vector<uchar*>& _ptrs, const std::vector<int>& _deltas,
                         matH[*p0]++;
         }
 
+        // Merge partial histograms if used
+        if( usePartialHist )
+        {
+            for(int i = 0; i < 256; i++ )
+            {
+                matH[i] += matH2[i];
+            }
+        }
+        
+        // Final accumulation to output histogram
         for(int i = 0; i < 256; i++ )
         {
             size_t hidx = tab[i];
@@ -594,12 +700,36 @@ calcHist_8u( std::vector<uchar*>& _ptrs, const std::vector<int>& _deltas,
         for( ; imsize.height--; p0 += step0, p1 += step1, mask += mstep )
         {
             if( !mask )
-                for( x = 0; x < imsize.width; x++, p0 += d0, p1 += d1 )
+            {
+                // Unroll 2D histogram calculation for better performance
+                x = 0;
+                if( d0 == 1 && d1 == 1 )
+                {
+                    // Continuous data - process 4 pixels at a time
+                    for( ; x <= imsize.width - 4; x += 4 )
+                    {
+                        size_t idx0 = tab[p0[x]] + tab[p1[x] + 256];
+                        size_t idx1 = tab[p0[x+1]] + tab[p1[x+1] + 256];
+                        size_t idx2 = tab[p0[x+2]] + tab[p1[x+2] + 256];
+                        size_t idx3 = tab[p0[x+3]] + tab[p1[x+3] + 256];
+                        
+                        if( idx0 < OUT_OF_RANGE ) ++*(int*)(H + idx0);
+                        if( idx1 < OUT_OF_RANGE ) ++*(int*)(H + idx1);
+                        if( idx2 < OUT_OF_RANGE ) ++*(int*)(H + idx2);
+                        if( idx3 < OUT_OF_RANGE ) ++*(int*)(H + idx3);
+                    }
+                    p0 += x;
+                    p1 += x;
+                }
+                
+                // Process remaining pixels
+                for( ; x < imsize.width; x++, p0 += d0, p1 += d1 )
                 {
                     size_t idx = tab[*p0] + tab[*p1 + 256];
                     if( idx < OUT_OF_RANGE )
                         ++*(int*)(H + idx);
                 }
+            }
             else
                 for( x = 0; x < imsize.width; x++, p0 += d0, p1 += d1 )
                 {
