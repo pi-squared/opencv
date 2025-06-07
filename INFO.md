@@ -170,9 +170,35 @@
 - Benefits most when processing high-resolution images with many edge pixels
 - Automatic CPU detection via OpenCV's dispatch system
 
+### 10. Good Features to Track SIMD Optimization (optimize-goodfeatures-simd)
+**Date**: 2025-06-07
+**Branch**: optimize-goodfeatures-simd
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/featureselect.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for corner collection loop using universal intrinsics
+- Implemented AVX-512 specific path for maximum performance on supported CPUs
+- Optimized distance checking loop with SIMD for minDistance enforcement
+- Process 4-16 pixels simultaneously depending on SIMD width (SSE: 4, AVX2: 8, AVX-512: 16)
+- Better memory access patterns with aligned loads where possible
+
+**Expected Performance Gains**:
+- Corner collection: 2-3x speedup with SIMD processing
+- Distance checking: 1.5-2x speedup for dense corner regions
+- AVX-512 path: Additional 2x speedup over AVX2 for corner collection
+- Overall goodFeaturesToTrack: 1.5-2.5x improvement on modern processors
+
+**Implementation Details**:
+- Uses OpenCV's universal intrinsics for cross-platform SIMD support
+- AVX-512 path uses mask registers for efficient conditional processing
+- Maintains bit-exact compatibility with original implementation
+- Falls back gracefully on systems without SIMD support
+
 ## Future Optimization Opportunities
 1. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
 2. **Template Matching**: The correlation operations in templmatch.cpp could use AVX-512 FMA instructions
+3. **Contour Finding**: The contour tracing algorithms could benefit from SIMD optimization
 
 ## Build Notes
 - Use `make -j$(nproc) opencv_imgproc` to build just the imgproc module
