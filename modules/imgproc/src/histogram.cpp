@@ -548,6 +548,113 @@ calcHist_8u( std::vector<uchar*>& _ptrs, const std::vector<int>& _deltas,
             {
                 if( d0 == 1 )
                 {
+#if CV_SIMD
+                    // SIMD optimization for continuous data
+                    v_uint8 zero = vx_setzero<v_uint8>();
+                    // Process multiple histograms in parallel to reduce data dependencies
+                    int matH_lanes[4][256] = {{0,}};
+                    
+                    // Process 64 bytes at a time (4x16 bytes) for better ILP
+                    for( x = 0; x <= imsize.width - v_uint8::nlanes*4; x += v_uint8::nlanes*4 )
+                    {
+#if defined(__AVX512F__) && CV_AVX512_SKX
+                        // Prefetch future data for better cache utilization
+                        _mm_prefetch((const char*)(p0 + x + v_uint8::nlanes*8), _MM_HINT_T0);
+#endif
+                        v_uint8 v0 = vx_load(p0 + x);
+                        v_uint8 v1 = vx_load(p0 + x + v_uint8::nlanes);
+                        v_uint8 v2 = vx_load(p0 + x + v_uint8::nlanes*2);
+                        v_uint8 v3 = vx_load(p0 + x + v_uint8::nlanes*3);
+                        
+                        // Extract values and update histograms
+                        // Using 4 separate histograms reduces false dependencies
+                        alignas(CV_SIMD_WIDTH) uchar buf0[v_uint8::nlanes];
+                        alignas(CV_SIMD_WIDTH) uchar buf1[v_uint8::nlanes];
+                        alignas(CV_SIMD_WIDTH) uchar buf2[v_uint8::nlanes];
+                        alignas(CV_SIMD_WIDTH) uchar buf3[v_uint8::nlanes];
+                        
+                        v_store_aligned(buf0, v0);
+                        v_store_aligned(buf1, v1);
+                        v_store_aligned(buf2, v2);
+                        v_store_aligned(buf3, v3);
+                        
+                        // Unroll inner loop for better performance
+                        for(int i = 0; i < v_uint8::nlanes; i += 4)
+                        {
+                            matH_lanes[0][buf0[i]]++;
+                            matH_lanes[1][buf1[i]]++;
+                            matH_lanes[2][buf2[i]]++;
+                            matH_lanes[3][buf3[i]]++;
+                            
+                            matH_lanes[0][buf0[i+1]]++;
+                            matH_lanes[1][buf1[i+1]]++;
+                            matH_lanes[2][buf2[i+1]]++;
+                            matH_lanes[3][buf3[i+1]]++;
+                            
+                            matH_lanes[0][buf0[i+2]]++;
+                            matH_lanes[1][buf1[i+2]]++;
+                            matH_lanes[2][buf2[i+2]]++;
+                            matH_lanes[3][buf3[i+2]]++;
+                            
+                            matH_lanes[0][buf0[i+3]]++;
+                            matH_lanes[1][buf1[i+3]]++;
+                            matH_lanes[2][buf2[i+3]]++;
+                            matH_lanes[3][buf3[i+3]]++;
+                        }
+                    }
+                    
+                    // Process 32 bytes at a time
+                    for( ; x <= imsize.width - v_uint8::nlanes*2; x += v_uint8::nlanes*2 )
+                    {
+                        v_uint8 v0 = vx_load(p0 + x);
+                        v_uint8 v1 = vx_load(p0 + x + v_uint8::nlanes);
+                        
+                        alignas(CV_SIMD_WIDTH) uchar buf0[v_uint8::nlanes];
+                        alignas(CV_SIMD_WIDTH) uchar buf1[v_uint8::nlanes];
+                        
+                        v_store_aligned(buf0, v0);
+                        v_store_aligned(buf1, v1);
+                        
+                        for(int i = 0; i < v_uint8::nlanes; i++)
+                        {
+                            matH_lanes[0][buf0[i]]++;
+                            matH_lanes[1][buf1[i]]++;
+                        }
+                    }
+                    
+                    // Process remaining SIMD width
+                    for( ; x <= imsize.width - v_uint8::nlanes; x += v_uint8::nlanes )
+                    {
+                        v_uint8 v0 = vx_load(p0 + x);
+                        alignas(CV_SIMD_WIDTH) uchar buf[v_uint8::nlanes];
+                        v_store_aligned(buf, v0);
+                        
+                        for(int i = 0; i < v_uint8::nlanes; i++)
+                            matH[buf[i]]++;
+                    }
+                    
+                    // Merge the parallel histograms with SIMD
+#if CV_SIMD
+                    v_int32 v_zero = vx_setzero<v_int32>();
+                    for(int i = 0; i < 256; i += v_int32::nlanes)
+                    {
+                        v_int32 sum = vx_load(matH + i);
+                        sum = v_add(sum, vx_load(matH_lanes[0] + i));
+                        sum = v_add(sum, vx_load(matH_lanes[1] + i));
+                        sum = v_add(sum, vx_load(matH_lanes[2] + i));
+                        sum = v_add(sum, vx_load(matH_lanes[3] + i));
+                        v_store(matH + i, sum);
+                    }
+#else
+                    for(int i = 0; i < 256; i++)
+                    {
+                        matH[i] += matH_lanes[0][i] + matH_lanes[1][i] + 
+                                   matH_lanes[2][i] + matH_lanes[3][i];
+                    }
+#endif
+                    
+                    p0 += x;
+#else
                     for( x = 0; x <= imsize.width - 4; x += 4 )
                     {
                         int t0 = p0[x], t1 = p0[x+1];
@@ -556,6 +663,7 @@ calcHist_8u( std::vector<uchar*>& _ptrs, const std::vector<int>& _deltas,
                         matH[t0]++; matH[t1]++;
                     }
                     p0 += x;
+#endif
                 }
                 else
                     for( x = 0; x <= imsize.width - 4; x += 4 )
