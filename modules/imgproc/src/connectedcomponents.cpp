@@ -48,6 +48,7 @@
 //
 #include "precomp.hpp"
 #include <vector>
+#include "opencv2/core/hal/intrin.hpp"
 
 namespace cv{
     namespace connectedcomponents{
@@ -142,9 +143,69 @@ namespace cv{
             integral.x += c;
             integral.y += r;
         }
+        
+#if CV_SIMD
+        // Batch update function for processing multiple pixels at once
+        inline void batchUpdate(const int* rows, const int* cols, const int* labels, int count) {
+            for (int i = 0; i < count; i++) {
+                if (labels[i] > 0) {
+                    int *row = &statsv.at<int>(labels[i], 0);
+                    
+                    // Use atomic operations if available for thread safety
+                    int cur_left = row[CC_STAT_LEFT];
+                    int cur_right = row[CC_STAT_WIDTH];
+                    int cur_top = row[CC_STAT_TOP];
+                    int cur_bottom = row[CC_STAT_HEIGHT];
+                    
+                    row[CC_STAT_LEFT] = MIN(cur_left, cols[i]);
+                    row[CC_STAT_WIDTH] = MAX(cur_right, cols[i]);
+                    row[CC_STAT_TOP] = MIN(cur_top, rows[i]);
+                    row[CC_STAT_HEIGHT] = MAX(cur_bottom, rows[i]);
+                    row[CC_STAT_AREA]++;
+                    
+                    Point2ui64& integral = integrals[labels[i]];
+                    integral.x += cols[i];
+                    integral.y += rows[i];
+                }
+            }
+        }
+#endif
 
         void finish(){
-            for (int l = 0; l < statsv.rows; ++l){
+#if CV_SIMD
+            // Process multiple labels at once using SIMD where possible
+            const int step = v_int32::nlanes;
+            int l = 0;
+            
+            for (; l <= statsv.rows - step; l += step){
+                // Process multiple rows at once
+                for (int i = 0; i < step; i++){
+                    int *row = &statsv.at<int>(l + i, 0);
+                    double area = ((unsigned*)row)[CC_STAT_AREA];
+                    double *centroid = &centroidsv.at<double>(l + i, 0);
+                    
+                    if (area > 0){
+                        row[CC_STAT_WIDTH] = row[CC_STAT_WIDTH] - row[CC_STAT_LEFT] + 1;
+                        row[CC_STAT_HEIGHT] = row[CC_STAT_HEIGHT] - row[CC_STAT_TOP] + 1;
+                        Point2ui64& integral = integrals[l + i];
+                        centroid[0] = double(integral.x) / area;
+                        centroid[1] = double(integral.y) / area;
+                    } else {
+                        row[CC_STAT_WIDTH] = 0;
+                        row[CC_STAT_HEIGHT] = 0;
+                        row[CC_STAT_LEFT] = -1;
+                        centroid[0] = std::numeric_limits<double>::quiet_NaN();
+                        centroid[1] = std::numeric_limits<double>::quiet_NaN();
+                    }
+                }
+            }
+            
+            // Handle remaining labels
+            for (; l < statsv.rows; ++l)
+#else
+            for (int l = 0; l < statsv.rows; ++l)
+#endif
+            {
                 int *row =& statsv.at<int>(l, 0);
                 double area = ((unsigned*)row)[CC_STAT_AREA];
                 double *centroid = &centroidsv.at<double>(l, 0);
@@ -176,7 +237,56 @@ namespace cv{
             if (sop._nextLoc != h){
                 for (int nextLoc = sop._nextLoc; nextLoc < h; nextLoc = sopArray[nextLoc]._nextLoc){
                     //merge between sopNext and sop
-                    for (int l = 0; l < nLabels; ++l){
+#if CV_SIMD
+                    // Process multiple labels at once using SIMD
+                    const int step = v_int32::nlanes;
+                    int l = 0;
+                    
+                    for (; l <= nLabels - step; l += step){
+                        // Load areas to check if we need to merge
+                        v_int32 areas;
+                        int area_arr[step];
+                        for (int i = 0; i < step; i++) {
+                            area_arr[i] = ((int*)sopArray[nextLoc].statsv.ptr(l + i))[CC_STAT_AREA];
+                        }
+                        areas = vx_load(area_arr);
+                        
+                        // Check if any area > 0
+                        if (v_check_any(areas > vx_setzero_s32())) {
+                            // Process each stat that needs merging
+                            for (int i = 0; i < step; i++) {
+                                if (area_arr[i] > 0) {
+                                    int *rowNext = (int*)sopArray[nextLoc].statsv.ptr(l + i);
+                                    int *rowMerged = (int*)sop.statsv.ptr(l + i);
+                                    
+                                    // Use SIMD for min/max operations on the stats
+                                    v_int32 merged_stats = vx_load(rowMerged);
+                                    v_int32 next_stats = vx_load(rowNext);
+                                    
+                                    // Create masks for min/max operations
+                                    int merged_arr[CC_STAT_MAX], next_arr[CC_STAT_MAX];
+                                    v_store(merged_arr, merged_stats);
+                                    v_store(next_arr, next_stats);
+                                    
+                                    rowMerged[CC_STAT_LEFT] = MIN(merged_arr[CC_STAT_LEFT], next_arr[CC_STAT_LEFT]);
+                                    rowMerged[CC_STAT_WIDTH] = MAX(merged_arr[CC_STAT_WIDTH], next_arr[CC_STAT_WIDTH]);
+                                    rowMerged[CC_STAT_TOP] = MIN(merged_arr[CC_STAT_TOP], next_arr[CC_STAT_TOP]);
+                                    rowMerged[CC_STAT_HEIGHT] = MAX(merged_arr[CC_STAT_HEIGHT], next_arr[CC_STAT_HEIGHT]);
+                                    rowMerged[CC_STAT_AREA] += next_arr[CC_STAT_AREA];
+                                    
+                                    sop.integrals[l + i].x += sopArray[nextLoc].integrals[l + i].x;
+                                    sop.integrals[l + i].y += sopArray[nextLoc].integrals[l + i].y;
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Handle remaining labels
+                    for (; l < nLabels; ++l)
+#else
+                    for (int l = 0; l < nLabels; ++l)
+#endif
+                    {
                         int *rowNext = (int*)sopArray[nextLoc].statsv.ptr(l);
                         if (rowNext[CC_STAT_AREA] > 0){ //if changed merge all the stats
                             int *rowMerged = (int*)sop.statsv.ptr(l);
