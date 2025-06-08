@@ -40,6 +40,7 @@
 //
 //M*/
 #include "precomp.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 void cv::cornerSubPix( InputArray _image, InputOutputArray _corners,
                        Size win, Size zeroZone, TermCriteria criteria )
@@ -109,6 +110,78 @@ void cv::cornerSubPix( InputArray _image, InputOutputArray _corners,
             const float* subpix = &subpix_buf.at<float>(1,1);
 
             // process gradient
+#if CV_SIMD
+            const int vstep = cv::v_float32::nlanes;
+            cv::v_float32 v_a = cv::vx_setzero_f32();
+            cv::v_float32 v_b = cv::vx_setzero_f32();
+            cv::v_float32 v_c = cv::vx_setzero_f32();
+            cv::v_float32 v_bb1 = cv::vx_setzero_f32();
+            cv::v_float32 v_bb2 = cv::vx_setzero_f32();
+            
+            for( i = 0, k = 0; i < win_h; i++, subpix += win_w + 2 )
+            {
+                double py = i - win.height;
+                cv::v_float32 v_py = cv::vx_setall_f32((float)py);
+                
+                j = 0;
+                for( ; j <= win_w - vstep; j += vstep, k += vstep )
+                {
+                    cv::v_float32 v_mask = cv::vx_load(mask + k);
+                    
+                    // Calculate gradients
+                    cv::v_float32 v_right = cv::vx_load(subpix + j + 1);
+                    cv::v_float32 v_left = cv::vx_load(subpix + j - 1);
+                    cv::v_float32 v_bottom = cv::vx_load(subpix + j + win_w + 2);
+                    cv::v_float32 v_top = cv::vx_load(subpix + j - win_w - 2);
+                    
+                    cv::v_float32 v_tgx = cv::v_sub(v_right, v_left);
+                    cv::v_float32 v_tgy = cv::v_sub(v_bottom, v_top);
+                    
+                    cv::v_float32 v_gxx = cv::v_mul(cv::v_mul(v_tgx, v_tgx), v_mask);
+                    cv::v_float32 v_gxy = cv::v_mul(cv::v_mul(v_tgx, v_tgy), v_mask);
+                    cv::v_float32 v_gyy = cv::v_mul(cv::v_mul(v_tgy, v_tgy), v_mask);
+                    
+                    // Create px vector [j-win.width, j+1-win.width, ..., j+vstep-1-win.width]
+                    CV_DECL_ALIGNED(CV_SIMD_WIDTH) float px_buf[cv::v_float32::nlanes];
+                    for (int n = 0; n < vstep; n++)
+                        px_buf[n] = (float)(j + n - win.width);
+                    cv::v_float32 v_px = cv::vx_load_aligned(px_buf);
+                    
+                    v_a = cv::v_add(v_a, v_gxx);
+                    v_b = cv::v_add(v_b, v_gxy);
+                    v_c = cv::v_add(v_c, v_gyy);
+                    
+                    v_bb1 = cv::v_add(v_bb1, cv::v_add(cv::v_mul(v_gxx, v_px), cv::v_mul(v_gxy, v_py)));
+                    v_bb2 = cv::v_add(v_bb2, cv::v_add(cv::v_mul(v_gxy, v_px), cv::v_mul(v_gyy, v_py)));
+                }
+                
+                // Process remaining elements
+                for( ; j < win_w; j++, k++ )
+                {
+                    double m = mask[k];
+                    double tgx = subpix[j+1] - subpix[j-1];
+                    double tgy = subpix[j+win_w+2] - subpix[j-win_w-2];
+                    double gxx = tgx * tgx * m;
+                    double gxy = tgx * tgy * m;
+                    double gyy = tgy * tgy * m;
+                    double px = j - win.width;
+
+                    a += gxx;
+                    b += gxy;
+                    c += gyy;
+
+                    bb1 += gxx * px + gxy * py;
+                    bb2 += gxy * px + gyy * py;
+                }
+            }
+            
+            // Sum up the SIMD accumulators
+            a += cv::v_reduce_sum(v_a);
+            b += cv::v_reduce_sum(v_b);
+            c += cv::v_reduce_sum(v_c);
+            bb1 += cv::v_reduce_sum(v_bb1);
+            bb2 += cv::v_reduce_sum(v_bb2);
+#else
             for( i = 0, k = 0; i < win_h; i++, subpix += win_w + 2 )
             {
                 double py = i - win.height;
@@ -131,6 +204,7 @@ void cv::cornerSubPix( InputArray _image, InputOutputArray _corners,
                     bb2 += gxy * px + gyy * py;
                 }
             }
+#endif
 
             double det=a*c-b*b;
             if( fabs( det ) <= DBL_EPSILON*DBL_EPSILON )
