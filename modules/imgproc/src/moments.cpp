@@ -213,7 +213,7 @@ struct MomentsInTile_SIMD
     }
 };
 
-#if CV_SIMD128
+#if CV_SIMD
 
 template <>
 struct MomentsInTile_SIMD<uchar, int, int>
@@ -227,9 +227,63 @@ struct MomentsInTile_SIMD<uchar, int, int>
     {
         int x = 0;
 
+#if CV_SIMD_WIDTH > 16
+        // Wider SIMD optimization: process 16 pixels at once for AVX2/AVX-512
+        // Using a simpler approach that processes 16 pixels using two sets of 8-pixel SIMD operations
+        {
+            v_int16x8 dx = v_setall_s16(16);  // Process 16 pixels per iteration
+            v_uint32x4 z = v_setzero_u32();
+            v_uint32x4 qx0_a = z, qx1_a = z, qx2_a = z, qx3_a = z;
+            v_uint32x4 qx0_b = z, qx1_b = z, qx2_b = z, qx3_b = z;
+
+            for( ; x <= len - 16; x += 16 )
+            {
+                // Prefetch next cache line for better memory throughput
+#if defined(__x86_64__) || defined(_M_X64)
+                _mm_prefetch((const char*)(ptr + x + 64), _MM_HINT_T0);
+#endif
+                
+                // Process first 8 pixels
+                {
+                    v_int16x8 qx = v_int16x8(x+0, x+1, x+2, x+3, x+4, x+5, x+6, x+7);
+                    v_int16x8 p = v_reinterpret_as_s16(v_load_expand(ptr + x));
+                    v_int16x8 sx = v_mul_wrap(qx, qx);
+
+                    qx0_a = v_add(qx0_a, v_reinterpret_as_u32(p));
+                    qx1_a = v_reinterpret_as_u32(v_dotprod(p, qx, v_reinterpret_as_s32(qx1_a)));
+                    qx2_a = v_reinterpret_as_u32(v_dotprod(p, sx, v_reinterpret_as_s32(qx2_a)));
+                    qx3_a = v_reinterpret_as_u32(v_dotprod(v_mul_wrap(p, qx), sx, v_reinterpret_as_s32(qx3_a)));
+                }
+                
+                // Process second 8 pixels
+                {
+                    v_int16x8 qx = v_int16x8(x+8, x+9, x+10, x+11, x+12, x+13, x+14, x+15);
+                    v_int16x8 p = v_reinterpret_as_s16(v_load_expand(ptr + x + 8));
+                    v_int16x8 sx = v_mul_wrap(qx, qx);
+
+                    qx0_b = v_add(qx0_b, v_reinterpret_as_u32(p));
+                    qx1_b = v_reinterpret_as_u32(v_dotprod(p, qx, v_reinterpret_as_s32(qx1_b)));
+                    qx2_b = v_reinterpret_as_u32(v_dotprod(p, sx, v_reinterpret_as_s32(qx2_b)));
+                    qx3_b = v_reinterpret_as_u32(v_dotprod(v_mul_wrap(p, qx), sx, v_reinterpret_as_s32(qx3_b)));
+                }
+            }
+
+            // Combine results
+            x0 += v_reduce_sum(qx0_a) + v_reduce_sum(qx0_b);
+            x0 = (x0 & 0xffff) + (x0 >> 16);
+            x1 += v_reduce_sum(qx1_a) + v_reduce_sum(qx1_b);
+            x2 += v_reduce_sum(qx2_a) + v_reduce_sum(qx2_b);
+            x3 += v_reduce_sum(qx3_a) + v_reduce_sum(qx3_b);
+        }
+#endif
+
+        // Standard SIMD128 path for remaining pixels
         {
             v_int16x8 dx = v_setall_s16(8), qx = v_int16x8(0, 1, 2, 3, 4, 5, 6, 7);
             v_uint32x4 z = v_setzero_u32(), qx0 = z, qx1 = z, qx2 = z, qx3 = z;
+            
+            // Adjust qx to start from current x position
+            qx = v_add(qx, v_setall_s16((short)x));
 
             for( ; x <= len - 8; x += 8 )
             {
@@ -244,11 +298,11 @@ struct MomentsInTile_SIMD<uchar, int, int>
                 qx = v_add(qx, dx);
             }
 
-            x0 = v_reduce_sum(qx0);
+            x0 += v_reduce_sum(qx0);
             x0 = (x0 & 0xffff) + (x0 >> 16);
-            x1 = v_reduce_sum(qx1);
-            x2 = v_reduce_sum(qx2);
-            x3 = v_reduce_sum(qx3);
+            x1 += v_reduce_sum(qx1);
+            x2 += v_reduce_sum(qx2);
+            x3 += v_reduce_sum(qx3);
         }
 
         return x;
@@ -267,10 +321,67 @@ struct MomentsInTile_SIMD<ushort, int, int64>
     {
         int x = 0;
 
+#if CV_SIMD_WIDTH >= 32
+        // Wider SIMD path for AVX2 and AVX-512
+        // Process more pixels at once using wider vectors
+        {
+            const int vsize = v_int32::nlanes;  // 4 for SSE, 8 for AVX2, 16 for AVX-512
+            if (vsize >= 8)
+            {
+                v_int32 v_delta = vx_setall<v_int32>(vsize);
+                int32_t CV_DECL_ALIGNED(CV_SIMD_WIDTH) idx_buf[16];
+                for (int i = 0; i < vsize; i++)
+                    idx_buf[i] = x + i;
+                v_int32 v_ix0 = vx_load(idx_buf);
+                
+                v_uint32 z = vx_setzero<v_uint32>();
+                v_uint32 v_x0 = z, v_x1 = z, v_x2 = z;
+                v_uint64 v_x3 = vx_setzero<v_uint64>();
+
+                for( ; x <= len - vsize; x += vsize )
+                {
+                    // Load vsize 16-bit values and convert to 32-bit
+                    v_uint16 v_src16 = vx_load(ptr + x);
+                    v_uint32 v_src_lo, v_src_hi;
+                    v_expand(v_src16, v_src_lo, v_src_hi);
+                    v_int32 v_src = v_reinterpret_as_s32(v_src_lo);
+
+                    // m00: sum(p)
+                    v_x0 = v_add(v_x0, v_reinterpret_as_u32(v_src));
+                    
+                    // m10: sum(p * x)
+                    v_x1 = v_add(v_x1, v_reinterpret_as_u32(v_mul(v_src, v_ix0)));
+
+                    // m20: sum(p * x^2)
+                    v_int32 v_ix1 = v_mul(v_ix0, v_ix0);
+                    v_x2 = v_add(v_x2, v_reinterpret_as_u32(v_mul(v_src, v_ix1)));
+
+                    // m30: sum(p * x^3)
+                    v_ix1 = v_mul(v_ix0, v_ix1);
+                    v_src = v_mul(v_src, v_ix1);
+                    v_uint64 v_lo, v_hi;
+                    v_expand(v_reinterpret_as_u32(v_src), v_lo, v_hi);
+                    v_x3 = v_add(v_x3, v_add(v_lo, v_hi));
+
+                    v_ix0 = v_add(v_ix0, v_delta);
+                }
+
+                x0 += v_reduce_sum(v_x0);
+                x1 += v_reduce_sum(v_x1);
+                x2 += v_reduce_sum(v_x2);
+                x3 += v_reduce_sum(v_x3);
+            }
+        }
+#endif
+
+        // Standard SIMD path
         {
             v_int32x4 v_delta = v_setall_s32(4), v_ix0 = v_int32x4(0, 1, 2, 3);
             v_uint32x4 z = v_setzero_u32(), v_x0 = z, v_x1 = z, v_x2 = z;
             v_uint64x2 v_x3 = v_reinterpret_as_u64(z);
+            
+            // Adjust starting position
+            v_ix0 = v_add(v_ix0, v_setall_s32(x));
 
             for( ; x <= len - 4; x += 4 )
             {
@@ -291,17 +402,16 @@ struct MomentsInTile_SIMD<ushort, int, int64>
                 v_ix0 = v_add(v_ix0, v_delta);
             }
 
-            x0 = v_reduce_sum(v_x0);
-            x1 = v_reduce_sum(v_x1);
-            x2 = v_reduce_sum(v_x2);
+            x0 += v_reduce_sum(v_x0);
+            x1 += v_reduce_sum(v_x1);
+            x2 += v_reduce_sum(v_x2);
+            int64 CV_DECL_ALIGNED(16) buf64[2];
             v_store_aligned(buf64, v_reinterpret_as_s64(v_x3));
-            x3 = buf64[0] + buf64[1];
+            x3 += buf64[0] + buf64[1];
         }
 
         return x;
     }
-
-    int64 CV_DECL_ALIGNED(16) buf64[2];
 };
 
 #endif

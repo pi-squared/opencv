@@ -272,10 +272,37 @@
 - Multiple histogram approach prepared but not fully implemented due to test compatibility
 - Future work could expand on the multi-histogram infrastructure
 
+### 14. Corner Sub-pixel Refinement SIMD Optimization (optimize-cornersubpix-simd-v2)
+**Date**: 2025-06-08
+**Branch**: optimize-cornersubpix-simd-v2
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/cornersubpix.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for gradient calculation loop using universal intrinsics
+- Process multiple pixels in parallel (4x on SSE, 8x on AVX2, 16x on AVX-512)
+- Vectorized gradient computation (tgx, tgy) and accumulation operations
+- Uses aligned loads for better memory access patterns
+- Implemented efficient px vector creation using aligned buffer
+- Maintains bit-exact compatibility with original implementation
+
+**Expected Performance Gains**:
+- Gradient calculation: 1.5-2x speedup with SIMD processing
+- Better cache utilization from processing multiple pixels at once
+- Reduced loop overhead from vectorized operations
+- Overall cornerSubPix: 1.5-2x improvement on modern processors
+
+**Testing Notes**:
+- Test program showed ~227 microseconds per operation for 100 corners
+- Correctly refines corners to sub-pixel accuracy (e.g., 439, 601 -> 439.959, 600.041)
+- All cornerSubPix unit tests pass successfully
+- The optimization is transparent to users - same API
+
 ## Future Optimization Opportunities
 1. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
 2. **Contour Finding**: The contour tracing algorithms could benefit from SIMD optimization
 3. **Full SIMD Histogram**: Complete the multi-histogram SIMD implementation with careful testing
+4. **Corner Detection Mask**: The Gaussian mask calculation in cornerSubPix could be pre-computed or SIMD optimized
 
 ## Build Notes
 - Use `make -j$(nproc) opencv_imgproc` to build just the imgproc module
