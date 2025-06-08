@@ -40,6 +40,7 @@
 //
 //M*/
 #include "precomp.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 void cv::cornerSubPix( InputArray _image, InputOutputArray _corners,
                        Size win, Size zeroZone, TermCriteria criteria )
@@ -113,7 +114,84 @@ void cv::cornerSubPix( InputArray _image, InputOutputArray _corners,
             {
                 double py = i - win.height;
 
-                for( j = 0; j < win_w; j++, k++ )
+#if CV_SIMD
+                v_float32 v_a = vx_setzero_f32();
+                v_float32 v_b = vx_setzero_f32();
+                v_float32 v_c = vx_setzero_f32();
+                v_float32 v_bb1 = vx_setzero_f32();
+                v_float32 v_bb2 = vx_setzero_f32();
+                v_float32 v_py = vx_setall_f32((float)py);
+
+                j = 0;
+                const int vstep = VTraits<v_float32>::vlanes();
+                
+#if CV_AVX512_SKX && CV_SIMD_WIDTH == 64
+                // AVX-512 specific optimization - process 16 values at once
+                // Prefetch ahead for better cache utilization
+                if (win_w >= 32) {
+                    const float* prefetch_ptr = subpix + 16;
+                    _mm_prefetch((const char*)prefetch_ptr, _MM_HINT_T0);
+                    _mm_prefetch((const char*)(prefetch_ptr + win_w + 2), _MM_HINT_T0);
+                }
+#endif
+                
+                for( ; j <= win_w - vstep; j += vstep, k += vstep )
+                {
+                    // Load mask values
+                    v_float32 v_mask = vx_load(mask + k);
+                    
+                    // Calculate gradients
+                    v_float32 v_tgx = v_sub(vx_load(subpix + j + 1), vx_load(subpix + j - 1));
+                    v_float32 v_tgy = v_sub(vx_load(subpix + j + win_w + 2), vx_load(subpix + j - win_w - 2));
+                    
+                    // Calculate gxx, gxy, gyy
+                    v_float32 v_gxx = v_mul(v_mul(v_tgx, v_tgx), v_mask);
+                    v_float32 v_gxy = v_mul(v_mul(v_tgx, v_tgy), v_mask);
+                    v_float32 v_gyy = v_mul(v_mul(v_tgy, v_tgy), v_mask);
+                    
+                    // Calculate px values
+                    float px_base = (float)(j - win.width);
+                    float px_vals[VTraits<v_float32>::max_nlanes];
+                    for (int idx = 0; idx < vstep; idx++)
+                        px_vals[idx] = px_base + idx;
+                    v_float32 v_px = vx_load(px_vals);
+                    
+                    // Accumulate matrix elements
+                    v_a = v_add(v_a, v_gxx);
+                    v_b = v_add(v_b, v_gxy);
+                    v_c = v_add(v_c, v_gyy);
+                    
+                    // Calculate bb1 and bb2 using FMA if available
+#if CV_FMA3
+                    v_bb1 = v_fma(v_gxx, v_px, v_bb1);
+                    v_bb1 = v_fma(v_gxy, v_py, v_bb1);
+                    v_bb2 = v_fma(v_gxy, v_px, v_bb2);
+                    v_bb2 = v_fma(v_gyy, v_py, v_bb2);
+#else
+                    v_bb1 = v_add(v_bb1, v_add(v_mul(v_gxx, v_px), v_mul(v_gxy, v_py)));
+                    v_bb2 = v_add(v_bb2, v_add(v_mul(v_gxy, v_px), v_mul(v_gyy, v_py)));
+#endif
+                    
+#if CV_AVX512_SKX && CV_SIMD_WIDTH == 64
+                    // Prefetch for next iteration
+                    if (j + vstep < win_w - vstep) {
+                        _mm_prefetch((const char*)(subpix + j + vstep + 16), _MM_HINT_T0);
+                        _mm_prefetch((const char*)(subpix + j + vstep + 16 + win_w + 2), _MM_HINT_T0);
+                    }
+#endif
+                }
+                
+                // Reduce SIMD accumulators
+                a += v_reduce_sum(v_a);
+                b += v_reduce_sum(v_b);
+                c += v_reduce_sum(v_c);
+                bb1 += v_reduce_sum(v_bb1);
+                bb2 += v_reduce_sum(v_bb2);
+#else
+                j = 0;
+#endif
+                // Process remaining elements
+                for( ; j < win_w; j++, k++ )
                 {
                     double m = mask[k];
                     double tgx = subpix[j+1] - subpix[j-1];
