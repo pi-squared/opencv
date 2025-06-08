@@ -247,10 +247,35 @@
 - Maintains bit-exact compatibility with original implementation
 - Correctly computes Euclidean distances with L2 metric
 
+### 13. Histogram Calculation Optimization (optimize-histogram-simd-v3)
+**Date**: 2025-06-08
+**Branch**: optimize-histogram-simd-v3
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/histogram.cpp
+
+**Improvements Made**:
+- Added cache prefetching for better memory access patterns
+- Prepared infrastructure for multi-histogram SIMD optimization
+- Added separate histogram arrays to reduce conflicts in future SIMD implementation
+- Conditional prefetching only on x86/x86_64 architectures
+- Maintains exact compatibility with original algorithm
+
+**Expected Performance Gains**:
+- Cache prefetching: 5-10% improvement for large images
+- Better memory bandwidth utilization
+- Reduced cache misses for sequential pixel access
+- Foundation laid for future SIMD vectorization
+
+**Implementation Notes**:
+- Initial attempts at loop unrolling and SIMD accumulation caused test failures
+- Current implementation focuses on safe optimizations (prefetching only)
+- Multiple histogram approach prepared but not fully implemented due to test compatibility
+- Future work could expand on the multi-histogram infrastructure
+
 ## Future Optimization Opportunities
 1. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
 2. **Contour Finding**: The contour tracing algorithms could benefit from SIMD optimization
-3. **Histogram Calculation**: The calcHist function could use SIMD for binning operations
+3. **Full SIMD Histogram**: Complete the multi-histogram SIMD implementation with careful testing
 
 ## Build Notes
 - Use `make -j$(nproc) opencv_imgproc` to build just the imgproc module
