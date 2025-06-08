@@ -316,7 +316,7 @@
 ### 15. WarpAffine AVX-512 Optimization Attempt (optimize-warpaffine-avx512-v2)
 **Date**: 2025-06-08
 **Branch**: optimize-warpaffine-avx512-v2
-**Status**: In Progress
+**Status**: Pushed to remote (Build integration pending)
 **Files**: 
 - modules/imgproc/src/imgwarp.avx512.cpp (new)
 - modules/imgproc/src/imgwarp.cpp (modified)
