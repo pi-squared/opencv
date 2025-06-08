@@ -323,8 +323,33 @@ static void momentsInTile( const Mat& img, double* moments )
         const T* ptr = img.ptr<T>(y);
         WT x0 = 0, x1 = 0, x2 = 0;
         MT x3 = 0;
+        
+        // Prefetch next row for better cache performance
+        #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+        if (y + 1 < size.height)
+        {
+            const T* next_ptr = img.ptr<T>(y + 1);
+            _mm_prefetch((const char*)next_ptr, _MM_HINT_T0);
+            _mm_prefetch((const char*)(next_ptr + size.width/2), _MM_HINT_T0);
+        }
+        #endif
+        
         x = vop(ptr, size.width, x0, x1, x2, x3);
 
+        // Process remaining pixels with 4x unrolling for better ILP
+        for( ; x <= size.width - 4; x += 4 )
+        {
+            WT p0 = ptr[x], p1 = ptr[x+1], p2 = ptr[x+2], p3 = ptr[x+3];
+            WT xp0 = x * p0, xp1 = (x+1) * p1, xp2 = (x+2) * p2, xp3 = (x+3) * p3;
+            WT xxp0 = xp0 * x, xxp1 = xp1 * (x+1), xxp2 = xp2 * (x+2), xxp3 = xp3 * (x+3);
+
+            x0 += p0 + p1 + p2 + p3;
+            x1 += xp0 + xp1 + xp2 + xp3;
+            x2 += xxp0 + xxp1 + xxp2 + xxp3;
+            x3 += ((MT)xxp0) * x + ((MT)xxp1) * (x+1) + ((MT)xxp2) * (x+2) + ((MT)xxp3) * (x+3);
+        }
+        
+        // Process remaining pixels
         for( ; x < size.width; x++ )
         {
             WT p = ptr[x];
