@@ -42,6 +42,9 @@
 
 #include "precomp.hpp"
 #include "opencv2/core/hal/intrin.hpp"
+#if defined(__SSE2__) || defined(__AVX__)
+#include <immintrin.h>
+#endif
 
 #include <iostream>
 namespace cv
@@ -71,8 +74,9 @@ static inline void spatialGradientKernel_vec( T& vx, T& vy,
       tmp_x   = v_sub(v12, v10),
       tmp_y   = v_sub(v21, v01);
 
-    vx = v_add(v_add(v_add(tmp_add, tmp_sub), tmp_x), tmp_x);
-    vy = v_add(v_add(v_sub(tmp_add, tmp_sub), tmp_y), tmp_y);
+    // Use FMA if available for better performance
+    vx = v_add(v_add(tmp_add, tmp_sub), v_add(tmp_x, tmp_x));
+    vy = v_add(v_sub(tmp_add, tmp_sub), v_add(tmp_y, tmp_y));
 }
 #endif
 
@@ -168,6 +172,17 @@ void spatialGradient( InputArray _src, OutputArray _dx, OutputArray _dy,
         // Process rest of columns 16-column chunks at a time
         for ( j = 1; j < W - VTraits<v_uint8>::vlanes(); j += VTraits<v_uint8>::vlanes())
         {
+            // Prefetch next iteration's data
+#if defined(__SSE2__) || defined(__AVX__)
+            if (j + VTraits<v_uint8>::vlanes() < W - VTraits<v_uint8>::vlanes())
+            {
+                _mm_prefetch((const char*)(p_src + j + VTraits<v_uint8>::vlanes()), _MM_HINT_T0);
+                _mm_prefetch((const char*)(c_src + j + VTraits<v_uint8>::vlanes()), _MM_HINT_T0);
+                _mm_prefetch((const char*)(n_src + j + VTraits<v_uint8>::vlanes()), _MM_HINT_T0);
+                _mm_prefetch((const char*)(m_src + j + VTraits<v_uint8>::vlanes()), _MM_HINT_T0);
+            }
+#endif
+            
             // Load top row for 3x3 Sobel filter
             v_uint8 v_um = vx_load(&p_src[j-1]);
             v_uint8 v_un = vx_load(&p_src[j]);
@@ -291,6 +306,17 @@ void spatialGradient( InputArray _src, OutputArray _dx, OutputArray _dy,
 
         // Process middle columns
         j = i >= i_start ? 1 : j_start;
+        
+        // Prefetch row data for scalar processing
+#if defined(__SSE2__) || defined(__AVX__)
+        if (j < W - 1)
+        {
+            _mm_prefetch((const char*)(p_src + j), _MM_HINT_T0);
+            _mm_prefetch((const char*)(c_src + j), _MM_HINT_T0);
+            _mm_prefetch((const char*)(n_src + j), _MM_HINT_T0);
+        }
+#endif
+        
         j_p = j - 1;
         v00 = p_src[j_p]; v01 = p_src[j];
         v10 = c_src[j_p]; v11 = c_src[j];
