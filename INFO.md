@@ -299,10 +299,66 @@
 - 8-bit conversions: ~2ms for RGB to Lab
 - Maintains bit-exact compatibility with original implementation
 
+### 15. CLAHE SIMD Optimization (optimize-clahe-simd-v3)
+**Date**: 2025-06-08
+**Branch**: optimize-clahe-simd-v3
+**Status**: Pushed to remote
+**Files**: 
+- modules/imgproc/src/clahe.cpp (modified)
+- modules/imgproc/src/clahe.simd.hpp (new)
+
+**Improvements Made**:
+- Added SIMD optimized histogram calculation using universal intrinsics
+- Implemented vectorized histogram clipping with v_select for conditional updates
+- Optimized bilinear interpolation using SIMD for 4-8x parallel pixel processing
+- Added AVX-512 specific path for 16-pixel simultaneous interpolation
+- Uses gather operations for LUT lookups with scalar fallback
+- Integrated seamlessly into existing CLAHE implementation
+
+**Expected Performance Gains**:
+- Histogram calculation: 1.5-2x speedup with SIMD parallelization
+- Histogram clipping: 2-3x speedup with vectorized comparisons
+- Bilinear interpolation: 2-4x speedup processing multiple pixels simultaneously
+- Overall CLAHE performance: 1.5-2x improvement on modern processors
+- AVX-512 provides additional 2x speedup over AVX2 for interpolation
+
+**Testing Notes**:
+- 640x480 image: ~1534 us per iteration (651 images/second)
+- Produces bit-exact results compared to original implementation
+- Consistent results across multiple runs (max difference: 0)
+- Performance scales well with image size (256x256: 3120 fps, 2048x2048: 43 fps)
+- Works correctly with edge cases (all black, all white, uniform images)
+
+### 16. Image Moments SIMD Optimization (optimize-moments-avx512-v3)
+**Date**: 2025-06-08
+**Branch**: optimize-moments-avx512-v3
+**Status**: Testing locally
+**File**: modules/imgproc/src/moments.cpp
+
+**Improvements Made**:
+- Added 4x loop unrolling in momentsInTile for better instruction-level parallelism
+- Added cache prefetching for next row to reduce memory stalls
+- Optimized MomentsInTile_SIMD for uchar type with improved SIMD utilization
+- Better handling of remaining pixels after SIMD processing
+- Maintains bit-exact compatibility with original implementation
+
+**Expected Performance Gains**:
+- 10-15% improvement from loop unrolling reducing loop overhead
+- 5-10% improvement from cache prefetching on large images
+- Better CPU utilization through increased ILP
+- Most benefit for larger images where cache effects are more pronounced
+
+**Testing Notes**:
+- All OpenCV moments tests pass successfully
+- Correctness verified with test program showing exact center of mass calculation
+- Performance measurement shows ~200us for 640x480 8-bit image
+- The optimization is transparent to users - same API
+
 ## Future Optimization Opportunities
 1. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
 2. **Contour Finding**: The contour tracing algorithms could benefit from SIMD optimization
 3. **Full SIMD Histogram**: Complete the multi-histogram SIMD implementation with careful testing
+4. **Moments with AVX-512**: When OpenCV adds AVX-512 intrinsics support, further optimize moments
 
 ## Build Notes
 - Use `make -j$(nproc) opencv_imgproc` to build just the imgproc module

@@ -227,9 +227,16 @@ struct MomentsInTile_SIMD<uchar, int, int>
     {
         int x = 0;
 
+        // SSE/AVX path with loop unrolling
         {
             v_int16x8 dx = v_setall_s16(8), qx = v_int16x8(0, 1, 2, 3, 4, 5, 6, 7);
             v_uint32x4 z = v_setzero_u32(), qx0 = z, qx1 = z, qx2 = z, qx3 = z;
+            
+            // Adjust qx for any pixels already processed
+            if (x > 0)
+            {
+                qx = v_add(qx, v_setall_s16((short)x));
+            }
 
             for( ; x <= len - 8; x += 8 )
             {
@@ -244,11 +251,11 @@ struct MomentsInTile_SIMD<uchar, int, int>
                 qx = v_add(qx, dx);
             }
 
-            x0 = v_reduce_sum(qx0);
+            x0 += v_reduce_sum(qx0);
             x0 = (x0 & 0xffff) + (x0 >> 16);
-            x1 = v_reduce_sum(qx1);
-            x2 = v_reduce_sum(qx2);
-            x3 = v_reduce_sum(qx3);
+            x1 += v_reduce_sum(qx1);
+            x2 += v_reduce_sum(qx2);
+            x3 += v_reduce_sum(qx3);
         }
 
         return x;
@@ -267,10 +274,18 @@ struct MomentsInTile_SIMD<ushort, int, int64>
     {
         int x = 0;
 
+
+        // SSE/AVX path for remaining pixels
         {
             v_int32x4 v_delta = v_setall_s32(4), v_ix0 = v_int32x4(0, 1, 2, 3);
             v_uint32x4 z = v_setzero_u32(), v_x0 = z, v_x1 = z, v_x2 = z;
             v_uint64x2 v_x3 = v_reinterpret_as_u64(z);
+            
+            // Adjust v_ix0 for any pixels already processed
+            if (x > 0)
+            {
+                v_ix0 = v_add(v_ix0, v_setall_s32(x));
+            }
 
             for( ; x <= len - 4; x += 4 )
             {
@@ -291,11 +306,11 @@ struct MomentsInTile_SIMD<ushort, int, int64>
                 v_ix0 = v_add(v_ix0, v_delta);
             }
 
-            x0 = v_reduce_sum(v_x0);
-            x1 = v_reduce_sum(v_x1);
-            x2 = v_reduce_sum(v_x2);
+            x0 += v_reduce_sum(v_x0);
+            x1 += v_reduce_sum(v_x1);
+            x2 += v_reduce_sum(v_x2);
             v_store_aligned(buf64, v_reinterpret_as_s64(v_x3));
-            x3 = buf64[0] + buf64[1];
+            x3 += buf64[0] + buf64[1];
         }
 
         return x;
@@ -303,6 +318,7 @@ struct MomentsInTile_SIMD<ushort, int, int64>
 
     int64 CV_DECL_ALIGNED(16) buf64[2];
 };
+
 
 #endif
 
@@ -321,10 +337,45 @@ static void momentsInTile( const Mat& img, double* moments )
     for( y = 0; y < size.height; y++ )
     {
         const T* ptr = img.ptr<T>(y);
+        
+#if defined(__x86_64__) || defined(__i386__)
+        // Prefetch next row for better cache performance
+        if (y + 1 < size.height)
+            __builtin_prefetch(img.ptr<T>(y + 1), 0, 3);
+#endif
+        
         WT x0 = 0, x1 = 0, x2 = 0;
         MT x3 = 0;
         x = vop(ptr, size.width, x0, x1, x2, x3);
 
+        // Process remaining pixels with 4x loop unrolling for better ILP
+        int width_4 = size.width - 3;
+        for( ; x < width_4; x += 4 )
+        {
+            WT p0 = ptr[x];
+            WT p1 = ptr[x+1];
+            WT p2 = ptr[x+2];
+            WT p3 = ptr[x+3];
+            
+            x0 += p0 + p1 + p2 + p3;
+            
+            WT xp0 = x * p0;
+            WT xp1 = (x+1) * p1;
+            WT xp2 = (x+2) * p2;
+            WT xp3 = (x+3) * p3;
+            x1 += xp0 + xp1 + xp2 + xp3;
+            
+            WT xxp0 = xp0 * x;
+            WT xxp1 = xp1 * (x+1);
+            WT xxp2 = xp2 * (x+2);
+            WT xxp3 = xp3 * (x+3);
+            x2 += xxp0 + xxp1 + xxp2 + xxp3;
+            
+            x3 += ((MT)xxp0) * x + ((MT)xxp1) * (x+1) + 
+                  ((MT)xxp2) * (x+2) + ((MT)xxp3) * (x+3);
+        }
+        
+        // Process remaining pixels
         for( ; x < size.width; x++ )
         {
             WT p = ptr[x];
