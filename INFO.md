@@ -299,10 +299,42 @@
 - 8-bit conversions: ~2ms for RGB to Lab
 - Maintains bit-exact compatibility with original implementation
 
+### 18. CLAHE (Contrast Limited Adaptive Histogram Equalization) SIMD Optimization (optimize-clahe-simd)
+**Date**: 2025-06-08
+**Branch**: optimize-clahe-simd
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/clahe.cpp
+
+**Improvements Made**:
+- Implemented multiple histogram approach (4 private histograms) to avoid memory conflicts in SIMD processing
+- Added SIMD optimization for histogram clipping using vectorized comparisons and min operations
+- Optimized histogram redistribution with SIMD vector operations
+- Added SIMD path for bilinear interpolation (partial implementation)
+- Used OpenCV universal intrinsics for cross-platform SIMD support
+
+**Expected Performance Gains**:
+- Histogram calculation: 2-3x speedup with private histograms approach
+- Histogram clipping: 1.5-2x speedup with SIMD min/max operations
+- Redistribution: 1.5x speedup with vectorized addition
+- Overall CLAHE: 1.3-1.8x improvement for 8-bit images
+
+**Implementation Details**:
+- Private histograms avoid the classic SIMD histogram problem of memory conflicts
+- Each SIMD lane updates its own histogram, then results are merged
+- Clipping uses vectorized comparisons to find excess values in parallel
+- Universal intrinsics ensure the optimization works across SSE, AVX2, and AVX-512
+
+**Testing Notes**:
+- All existing CLAHE tests pass without modification
+- Maintains bit-exact compatibility with original implementation
+- Performance varies based on tile size and clip limit parameters
+- 8-bit optimizations are fully implemented, 16-bit partially
+
 ## Future Optimization Opportunities
 1. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
 2. **Contour Finding**: The contour tracing algorithms could benefit from SIMD optimization
 3. **Full SIMD Histogram**: Complete the multi-histogram SIMD implementation with careful testing
+4. **CLAHE Interpolation**: Complete the SIMD optimization for the bilinear interpolation phase
 
 ## Build Notes
 - Use `make -j$(nproc) opencv_imgproc` to build just the imgproc module

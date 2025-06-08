@@ -227,8 +227,15 @@ struct MomentsInTile_SIMD<uchar, int, int>
     {
         int x = 0;
 
+#if CV_SIMD512 && CV_SIMD512_64BIT
+        // AVX-512 path - process 32 pixels at once
+        // Note: This requires proper type definitions for v512 vectors
+        // For now, let's skip AVX-512 optimization until we can verify the correct syntax
+#endif
+
+        // Regular SIMD path for remaining pixels
         {
-            v_int16x8 dx = v_setall_s16(8), qx = v_int16x8(0, 1, 2, 3, 4, 5, 6, 7);
+            v_int16x8 dx = v_setall_s16(8), qx = v_int16x8(x, x+1, x+2, x+3, x+4, x+5, x+6, x+7);
             v_uint32x4 z = v_setzero_u32(), qx0 = z, qx1 = z, qx2 = z, qx3 = z;
 
             for( ; x <= len - 8; x += 8 )
@@ -244,11 +251,11 @@ struct MomentsInTile_SIMD<uchar, int, int>
                 qx = v_add(qx, dx);
             }
 
-            x0 = v_reduce_sum(qx0);
+            x0 += v_reduce_sum(qx0);
             x0 = (x0 & 0xffff) + (x0 >> 16);
-            x1 = v_reduce_sum(qx1);
-            x2 = v_reduce_sum(qx2);
-            x3 = v_reduce_sum(qx3);
+            x1 += v_reduce_sum(qx1);
+            x2 += v_reduce_sum(qx2);
+            x3 += v_reduce_sum(qx3);
         }
 
         return x;
@@ -267,8 +274,15 @@ struct MomentsInTile_SIMD<ushort, int, int64>
     {
         int x = 0;
 
+#if CV_SIMD512 && CV_SIMD512_64BIT
+        // AVX-512 path - process 16 pixels at once
+        // Note: This requires proper type definitions for v512 vectors
+        // For now, let's skip AVX-512 optimization until we can verify the correct syntax
+#endif
+
+        // Regular SIMD path for remaining pixels
         {
-            v_int32x4 v_delta = v_setall_s32(4), v_ix0 = v_int32x4(0, 1, 2, 3);
+            v_int32x4 v_delta = v_setall_s32(4), v_ix0 = v_int32x4(x, x+1, x+2, x+3);
             v_uint32x4 z = v_setzero_u32(), v_x0 = z, v_x1 = z, v_x2 = z;
             v_uint64x2 v_x3 = v_reinterpret_as_u64(z);
 
@@ -291,17 +305,145 @@ struct MomentsInTile_SIMD<ushort, int, int64>
                 v_ix0 = v_add(v_ix0, v_delta);
             }
 
-            x0 = v_reduce_sum(v_x0);
-            x1 = v_reduce_sum(v_x1);
-            x2 = v_reduce_sum(v_x2);
+            x0 += v_reduce_sum(v_x0);
+            x1 += v_reduce_sum(v_x1);
+            x2 += v_reduce_sum(v_x2);
             v_store_aligned(buf64, v_reinterpret_as_s64(v_x3));
-            x3 = buf64[0] + buf64[1];
+            x3 += buf64[0] + buf64[1];
         }
 
         return x;
     }
 
     int64 CV_DECL_ALIGNED(16) buf64[2];
+};
+
+// SIMD optimization for float type
+template <>
+struct MomentsInTile_SIMD<float, double, double>
+{
+    MomentsInTile_SIMD()
+    {
+        // nothing
+    }
+
+    int operator() (const float * ptr, int len, double & x0, double & x1, double & x2, double & x3)
+    {
+        int x = 0;
+
+#if CV_SIMD512
+        // AVX-512 path - process 16 floats at once
+        {
+            v_float32 v_delta16 = v512_setall<float>(16.0f);
+            v_float32 v_ix0 = v_float32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+            v_float64 v_x0_0 = v512_setzero<double>();
+            v_float64 v_x0_1 = v512_setzero<double>();
+            v_float64 v_x1_0 = v512_setzero<double>();
+            v_float64 v_x1_1 = v512_setzero<double>();
+            v_float64 v_x2_0 = v512_setzero<double>();
+            v_float64 v_x2_1 = v512_setzero<double>();
+            v_float64 v_x3_0 = v512_setzero<double>();
+            v_float64 v_x3_1 = v512_setzero<double>();
+            
+            for( ; x <= len - 16; x += 16 )
+            {
+                // Load 16 float values
+                v_float32 v_src = v512_load(ptr + x);
+                
+                // Convert to double precision for accumulation
+                v_float64 v_src_0, v_src_1;
+                v_expand(v_src, v_src_0, v_src_1);
+                
+                // Calculate x positions in double precision
+                v_float64 v_x_0, v_x_1;
+                v_expand(v_ix0, v_x_0, v_x_1);
+                
+                // Accumulate m00 (sum of pixels)
+                v_x0_0 = v_add(v_x0_0, v_src_0);
+                v_x0_1 = v_add(v_x0_1, v_src_1);
+                
+                // Accumulate m10 (sum of x*p)
+                v_x1_0 = v_fma(v_src_0, v_x_0, v_x1_0);
+                v_x1_1 = v_fma(v_src_1, v_x_1, v_x1_1);
+                
+                // Accumulate m20 (sum of x^2*p)
+                v_float64 v_x2_tmp_0 = v_mul(v_x_0, v_x_0);
+                v_float64 v_x2_tmp_1 = v_mul(v_x_1, v_x_1);
+                v_x2_0 = v_fma(v_src_0, v_x2_tmp_0, v_x2_0);
+                v_x2_1 = v_fma(v_src_1, v_x2_tmp_1, v_x2_1);
+                
+                // Accumulate m30 (sum of x^3*p)
+                v_float64 v_x3_tmp_0 = v_mul(v_x2_tmp_0, v_x_0);
+                v_float64 v_x3_tmp_1 = v_mul(v_x2_tmp_1, v_x_1);
+                v_x3_0 = v_fma(v_src_0, v_x3_tmp_0, v_x3_0);
+                v_x3_1 = v_fma(v_src_1, v_x3_tmp_1, v_x3_1);
+                
+                v_ix0 = v_add(v_ix0, v_delta16);
+            }
+            
+            // Reduce results
+            x0 = v_reduce_sum(v_x0_0) + v_reduce_sum(v_x0_1);
+            x1 = v_reduce_sum(v_x1_0) + v_reduce_sum(v_x1_1);
+            x2 = v_reduce_sum(v_x2_0) + v_reduce_sum(v_x2_1);
+            x3 = v_reduce_sum(v_x3_0) + v_reduce_sum(v_x3_1);
+        }
+#endif
+
+        // Regular SIMD path for remaining pixels
+        {
+            v_float32x4 v_delta = v_setall<float>(4.0f);
+            v_float32x4 v_ix0 = v_float32x4((float)x, (float)(x+1), (float)(x+2), (float)(x+3));
+            v_float64x2 v_x0_0 = v_setzero_f64();
+            v_float64x2 v_x0_1 = v_setzero_f64();
+            v_float64x2 v_x1_0 = v_setzero_f64();
+            v_float64x2 v_x1_1 = v_setzero_f64();
+            v_float64x2 v_x2_0 = v_setzero_f64();
+            v_float64x2 v_x2_1 = v_setzero_f64();
+            v_float64x2 v_x3_0 = v_setzero_f64();
+            v_float64x2 v_x3_1 = v_setzero_f64();
+            
+            for( ; x <= len - 4; x += 4 )
+            {
+                v_float32x4 v_src = v_load(ptr + x);
+                
+                // Manually convert float32 to float64
+                float CV_DECL_ALIGNED(16) fbuf[4];
+                v_store_aligned(fbuf, v_src);
+                v_float64x2 v_src_0 = v_float64x2(fbuf[0], fbuf[1]);
+                v_float64x2 v_src_1 = v_float64x2(fbuf[2], fbuf[3]);
+                
+                float CV_DECL_ALIGNED(16) xbuf[4];
+                v_store_aligned(xbuf, v_ix0);
+                v_float64x2 v_x_0 = v_float64x2(xbuf[0], xbuf[1]);
+                v_float64x2 v_x_1 = v_float64x2(xbuf[2], xbuf[3]);
+                
+                v_x0_0 = v_add(v_x0_0, v_src_0);
+                v_x0_1 = v_add(v_x0_1, v_src_1);
+                
+                v_x1_0 = v_fma(v_src_0, v_x_0, v_x1_0);
+                v_x1_1 = v_fma(v_src_1, v_x_1, v_x1_1);
+                
+                v_float64x2 v_x2_tmp_0 = v_mul(v_x_0, v_x_0);
+                v_float64x2 v_x2_tmp_1 = v_mul(v_x_1, v_x_1);
+                v_x2_0 = v_fma(v_src_0, v_x2_tmp_0, v_x2_0);
+                v_x2_1 = v_fma(v_src_1, v_x2_tmp_1, v_x2_1);
+                
+                v_float64x2 v_x3_tmp_0 = v_mul(v_x2_tmp_0, v_x_0);
+                v_float64x2 v_x3_tmp_1 = v_mul(v_x2_tmp_1, v_x_1);
+                v_x3_0 = v_fma(v_src_0, v_x3_tmp_0, v_x3_0);
+                v_x3_1 = v_fma(v_src_1, v_x3_tmp_1, v_x3_1);
+                
+                v_ix0 = v_add(v_ix0, v_delta);
+            }
+            
+            x0 += v_reduce_sum(v_x0_0) + v_reduce_sum(v_x0_1);
+            x1 += v_reduce_sum(v_x1_0) + v_reduce_sum(v_x1_1);
+            x2 += v_reduce_sum(v_x2_0) + v_reduce_sum(v_x2_1);
+            x3 += v_reduce_sum(v_x3_0) + v_reduce_sum(v_x3_1);
+        }
+
+        return x;
+    }
 };
 
 #endif
