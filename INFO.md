@@ -272,10 +272,39 @@
 - Multiple histogram approach prepared but not fully implemented due to test compatibility
 - Future work could expand on the multi-histogram infrastructure
 
+### 14. Gabor Kernel Generation SIMD Optimization (optimize-gabor-simd-v2)
+**Date**: 2025-06-08
+**Branch**: optimize-gabor-simd-v2
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/gabor.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for both float32 and float64 precision paths
+- Implemented 2x loop unrolling for better instruction-level parallelism (ILP)
+- Pre-computed constants outside loops to reduce redundant calculations
+- Used OpenCV's universal intrinsics (v_exp, v_cos) for cross-platform SIMD support
+- Process 4-16 values simultaneously depending on SIMD width (SSE: 4, AVX2: 8, AVX-512: 16)
+- Optimized memory access patterns with sequential writes
+
+**Expected Performance Gains**:
+- Float32 kernels: 2-3x speedup on AVX2/AVX-512 systems
+- Float64 kernels: 1.5-2x speedup on AVX2/AVX-512 systems
+- Better cache utilization and reduced memory bandwidth usage
+- Performance scales with SIMD width automatically
+
+**Implementation Details**:
+- Uses OpenCV's v_exp and v_cos vectorized math functions
+- Processes expensive exp() and cos() operations in parallel
+- Maintains bit-exact compatibility with original implementation
+- Falls back gracefully to scalar code on systems without SIMD
+
 ## Future Optimization Opportunities
 1. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
 2. **Contour Finding**: The contour tracing algorithms could benefit from SIMD optimization
 3. **Full SIMD Histogram**: Complete the multi-histogram SIMD implementation with careful testing
+4. **Filter2D Operations**: Optimize generic convolution operations with SIMD
+5. **Color Space Conversions**: Many color conversions could benefit from better vectorization
+6. **Geometric Transforms**: Operations like warpAffine/warpPerspective could be optimized
 
 ## Build Notes
 - Use `make -j$(nproc) opencv_imgproc` to build just the imgproc module

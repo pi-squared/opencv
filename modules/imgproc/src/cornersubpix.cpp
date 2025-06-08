@@ -40,6 +40,7 @@
 //
 //M*/
 #include "precomp.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 void cv::cornerSubPix( InputArray _image, InputOutputArray _corners,
                        Size win, Size zeroZone, TermCriteria criteria )
@@ -109,6 +110,90 @@ void cv::cornerSubPix( InputArray _image, InputOutputArray _corners,
             const float* subpix = &subpix_buf.at<float>(1,1);
 
             // process gradient
+#if CV_SIMD
+            // SIMD-optimized gradient computation
+            v_float32 v_a = vx_setzero_f32();
+            v_float32 v_b = vx_setzero_f32();
+            v_float32 v_c = vx_setzero_f32();
+            v_float32 v_bb1 = vx_setzero_f32();
+            v_float32 v_bb2 = vx_setzero_f32();
+            
+            const int vstep = v_float32::nlanes;
+            
+            for( i = 0, k = 0; i < win_h; i++, subpix += win_w + 2 )
+            {
+                float py = (float)(i - win.height);
+                v_float32 v_py = vx_setall_f32(py);
+                
+                j = 0;
+                for( ; j <= win_w - vstep; j += vstep, k += vstep )
+                {
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+                    // Prefetch next cache line
+                    if (j + vstep < win_w)
+                        _mm_prefetch((const char*)(&subpix[j + vstep]), _MM_HINT_T0);
+#endif
+                    
+                    // Load mask values
+                    v_float32 v_mask = vx_load(&mask[k]);
+                    
+                    // Calculate gradients
+                    v_float32 v_left = vx_load(&subpix[j-1]);
+                    v_float32 v_right = vx_load(&subpix[j+1]);
+                    v_float32 v_top = vx_load(&subpix[j-win_w-2]);
+                    v_float32 v_bottom = vx_load(&subpix[j+win_w+2]);
+                    
+                    v_float32 v_tgx = v_sub(v_right, v_left);
+                    v_float32 v_tgy = v_sub(v_bottom, v_top);
+                    
+                    // Calculate gxx, gxy, gyy
+                    v_float32 v_gxx = v_mul(v_mul(v_tgx, v_tgx), v_mask);
+                    v_float32 v_gxy = v_mul(v_mul(v_tgx, v_tgy), v_mask);
+                    v_float32 v_gyy = v_mul(v_mul(v_tgy, v_tgy), v_mask);
+                    
+                    // Create px values
+                    float px_vals[v_float32::nlanes];
+                    for(int l = 0; l < vstep; l++)
+                        px_vals[l] = (float)(j + l - win.width);
+                    v_float32 v_px = vx_load(px_vals);
+                    
+                    // Accumulate values
+                    v_a = v_add(v_a, v_gxx);
+                    v_b = v_add(v_b, v_gxy);
+                    v_c = v_add(v_c, v_gyy);
+                    
+                    v_bb1 = v_add(v_bb1, v_add(v_mul(v_gxx, v_px), v_mul(v_gxy, v_py)));
+                    v_bb2 = v_add(v_bb2, v_add(v_mul(v_gxy, v_px), v_mul(v_gyy, v_py)));
+                }
+                
+                // Process remaining elements
+                for( ; j < win_w; j++, k++ )
+                {
+                    double m = mask[k];
+                    double tgx = subpix[j+1] - subpix[j-1];
+                    double tgy = subpix[j+win_w+2] - subpix[j-win_w-2];
+                    double gxx = tgx * tgx * m;
+                    double gxy = tgx * tgy * m;
+                    double gyy = tgy * tgy * m;
+                    double px = j - win.width;
+
+                    a += gxx;
+                    b += gxy;
+                    c += gyy;
+
+                    bb1 += gxx * px + gxy * py;
+                    bb2 += gxy * px + gyy * py;
+                }
+            }
+            
+            // Reduce SIMD results
+            a += v_reduce_sum(v_a);
+            b += v_reduce_sum(v_b);
+            c += v_reduce_sum(v_c);
+            bb1 += v_reduce_sum(v_bb1);
+            bb2 += v_reduce_sum(v_bb2);
+#else
+            // Original scalar implementation
             for( i = 0, k = 0; i < win_h; i++, subpix += win_w + 2 )
             {
                 double py = i - win.height;
@@ -131,6 +216,7 @@ void cv::cornerSubPix( InputArray _image, InputOutputArray _corners,
                     bb2 += gxy * px + gyy * py;
                 }
             }
+#endif
 
             double det=a*c-b*b;
             if( fabs( det ) <= DBL_EPSILON*DBL_EPSILON )
