@@ -42,6 +42,7 @@
 
 #include "precomp.hpp"
 #include "opencl_kernels_imgproc.hpp"
+#include "clahe.simd.hpp"
 
 // ----------------------------------------------------------------------
 // CLAHE
@@ -166,21 +167,35 @@ namespace
             int* tileHist = _tileHist.data();
             std::fill(tileHist, tileHist + histSize, 0);
 
-            int height = tileROI.height;
-            const size_t sstep = src_.step / sizeof(T);
-            for (const T* ptr = tile.ptr<T>(0); height--; ptr += sstep)
+#if CV_SIMD && !defined(__arm__) && !defined(__aarch64__)
+            // Use SIMD optimized histogram calculation for better performance
+            // Note: ARM platforms use different approach due to lack of efficient scatter
+            if (shift == 0 && std::is_same<T, uchar>::value)
             {
-                int x = 0;
-                for (; x <= tileROI.width - 4; x += 4)
+                cv::clahe_simd::calcHistogram_SIMD(tile.ptr<uchar>(0), tileHist, 
+                                                  tileROI.width, tileROI.height, 
+                                                  src_.step / sizeof(uchar));
+            }
+            else
+#endif
+            {
+                // Fallback to original implementation
+                int height = tileROI.height;
+                const size_t sstep = src_.step / sizeof(T);
+                for (const T* ptr = tile.ptr<T>(0); height--; ptr += sstep)
                 {
-                    int t0 = ptr[x], t1 = ptr[x+1];
-                    tileHist[t0 >> shift]++; tileHist[t1 >> shift]++;
-                    t0 = ptr[x+2]; t1 = ptr[x+3];
-                    tileHist[t0 >> shift]++; tileHist[t1 >> shift]++;
-                }
+                    int x = 0;
+                    for (; x <= tileROI.width - 4; x += 4)
+                    {
+                        int t0 = ptr[x], t1 = ptr[x+1];
+                        tileHist[t0 >> shift]++; tileHist[t1 >> shift]++;
+                        t0 = ptr[x+2]; t1 = ptr[x+3];
+                        tileHist[t0 >> shift]++; tileHist[t1 >> shift]++;
+                    }
 
-                for (; x < tileROI.width; ++x)
-                    tileHist[ptr[x] >> shift]++;
+                    for (; x < tileROI.width; ++x)
+                        tileHist[ptr[x] >> shift]++;
+                }
             }
 
             // clip histogram
@@ -189,6 +204,12 @@ namespace
             {
                 // how many pixels were clipped
                 int clipped = 0;
+                
+#if CV_SIMD
+                // Use SIMD optimized histogram clipping
+                clipped = cv::clahe_simd::clipHistogram_SIMD(tileHist, histSize, clipLimit_);
+#else
+                // Original implementation
                 for (int i = 0; i < histSize; ++i)
                 {
                     if (tileHist[i] > clipLimit_)
@@ -197,6 +218,7 @@ namespace
                         tileHist[i] = clipLimit_;
                     }
                 }
+#endif
 
                 // redistribute clipped pixels
                 int redistBatch = clipped / histSize;
@@ -297,17 +319,40 @@ namespace
             const T* lutPlane1 = lut_.ptr<T>(ty1 * tilesX_);
             const T* lutPlane2 = lut_.ptr<T>(ty2 * tilesX_);
 
-            for (int x = 0; x < src_.cols; ++x)
+#if CV_SIMD
+            // Use SIMD optimized interpolation for 8-bit images
+            if (shift == 0 && std::is_same<T, uchar>::value)
             {
-                int srcVal = srcRow[x] >> shift;
+                cv::clahe_simd::interpolate_SIMD((const uchar*)srcRow, (uchar*)dstRow, src_.cols,
+                                               (const uchar*)lutPlane1, (const uchar*)lutPlane2,
+                                               ind1_p, ind2_p, xa_p, xa1_p, ya, ya1);
+            }
+#ifdef CV_CPU_DISPATCH_MODE
+#if CV_CPU_BASELINE_COMPILE_AVX512_SKX || CV_CPU_DISPATCH_COMPILE_AVX512_SKX
+            else if (shift == 0 && std::is_same<T, uchar>::value && cv::checkHardwareSupport(CV_CPU_AVX512_SKX))
+            {
+                cv::clahe_simd::interpolate_AVX512((const uchar*)srcRow, (uchar*)dstRow, src_.cols,
+                                                  (const uchar*)lutPlane1, (const uchar*)lutPlane2,
+                                                  ind1_p, ind2_p, xa_p, xa1_p, ya, ya1);
+            }
+#endif
+#endif
+            else
+#endif
+            {
+                // Original implementation
+                for (int x = 0; x < src_.cols; ++x)
+                {
+                    int srcVal = srcRow[x] >> shift;
 
-                int ind1 = ind1_p[x] + srcVal;
-                int ind2 = ind2_p[x] + srcVal;
+                    int ind1 = ind1_p[x] + srcVal;
+                    int ind2 = ind2_p[x] + srcVal;
 
-                float res = (lutPlane1[ind1] * xa1_p[x] + lutPlane1[ind2] * xa_p[x]) * ya1 +
-                            (lutPlane2[ind1] * xa1_p[x] + lutPlane2[ind2] * xa_p[x]) * ya;
+                    float res = (lutPlane1[ind1] * xa1_p[x] + lutPlane1[ind2] * xa_p[x]) * ya1 +
+                                (lutPlane2[ind1] * xa1_p[x] + lutPlane2[ind2] * xa_p[x]) * ya;
 
-                dstRow[x] = cv::saturate_cast<T>(res) << shift;
+                    dstRow[x] = cv::saturate_cast<T>(res) << shift;
+                }
             }
         }
     }
