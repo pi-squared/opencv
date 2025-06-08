@@ -2645,14 +2645,17 @@ void warpAffineBlockline(int *adelta, int *bdelta, short* xy, short* alpha, int 
 
     const int AB_BITS = MAX(10, (int)INTER_BITS);
     int x1 = 0;
+    #if CV_TRY_AVX512_SKX
+    bool useAVX512 = CV_CPU_HAS_SUPPORT_AVX512_SKX;
+    if ( useAVX512 )
+        x1 = opt_AVX512_SKX::warpAffineBlockline(adelta, bdelta, xy, alpha, X0, Y0, bw);
+    #endif
     #if CV_TRY_AVX2
-    bool useAVX2 = CV_CPU_HAS_SUPPORT_AVX2;
-    if ( useAVX2 )
+    if ( x1 == 0 && CV_CPU_HAS_SUPPORT_AVX2 )
         x1 = opt_AVX2::warpAffineBlockline(adelta, bdelta, xy, alpha, X0, Y0, bw);
     #endif
     #if CV_TRY_LASX
-    bool useLASX = CV_CPU_HAS_SUPPORT_LASX;
-    if ( useLASX )
+    if ( x1 == 0 && CV_CPU_HAS_SUPPORT_LASX )
         x1 = opt_LASX::warpAffineBlockline(adelta, bdelta, xy, alpha, X0, Y0, bw);
     #endif
     {

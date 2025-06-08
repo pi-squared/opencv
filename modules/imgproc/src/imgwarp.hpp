@@ -54,6 +54,13 @@
 
 namespace cv
 {
+namespace opt_AVX512_SKX
+{
+#if CV_TRY_AVX512_SKX
+int warpAffineBlockline(int *adelta, int *bdelta, short* xy, short* alpha, int X0, int Y0, int bw);
+#endif
+}
+
 namespace opt_AVX2
 {
 #if CV_TRY_AVX2
