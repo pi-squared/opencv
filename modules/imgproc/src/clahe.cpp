@@ -42,6 +42,7 @@
 
 #include "precomp.hpp"
 #include "opencl_kernels_imgproc.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 // ----------------------------------------------------------------------
 // CLAHE
@@ -297,7 +298,78 @@ namespace
             const T* lutPlane1 = lut_.ptr<T>(ty1 * tilesX_);
             const T* lutPlane2 = lut_.ptr<T>(ty2 * tilesX_);
 
-            for (int x = 0; x < src_.cols; ++x)
+            int x = 0;
+
+#if CV_SIMD
+            // SIMD optimization for the interpolation loop
+            cv::v_float32 v_ya = cv::vx_setall<float>(ya);
+            cv::v_float32 v_ya1 = cv::vx_setall<float>(ya1);
+
+            // Process multiple pixels at once using SIMD
+            const int nlanes = cv::VTraits<cv::v_float32>::vlanes();
+            for (; x <= src_.cols - nlanes; x += nlanes)
+            {
+                // Gather LUT values (scalar fallback for gather operation)
+                float lut1_vals1[cv::VTraits<cv::v_float32>::max_nlanes];
+                float lut1_vals2[cv::VTraits<cv::v_float32>::max_nlanes];
+                float lut2_vals1[cv::VTraits<cv::v_float32>::max_nlanes];
+                float lut2_vals2[cv::VTraits<cv::v_float32>::max_nlanes];
+                
+                // Load pre-computed weights
+                cv::v_float32 v_xa = cv::vx_load(xa_p + x);
+                cv::v_float32 v_xa1 = cv::vx_load(xa1_p + x);
+                
+                // Process each lane
+                for (int i = 0; i < nlanes; i++)
+                {
+                    int srcVal = srcRow[x + i] >> shift;
+                    int ind1 = ind1_p[x + i] + srcVal;
+                    int ind2 = ind2_p[x + i] + srcVal;
+                    
+                    lut1_vals1[i] = (float)lutPlane1[ind1];
+                    lut1_vals2[i] = (float)lutPlane1[ind2];
+                    lut2_vals1[i] = (float)lutPlane2[ind1];
+                    lut2_vals2[i] = (float)lutPlane2[ind2];
+                }
+
+                cv::v_float32 v_lut1_1 = cv::vx_load(lut1_vals1);
+                cv::v_float32 v_lut1_2 = cv::vx_load(lut1_vals2);
+                cv::v_float32 v_lut2_1 = cv::vx_load(lut2_vals1);
+                cv::v_float32 v_lut2_2 = cv::vx_load(lut2_vals2);
+
+                // Bilinear interpolation
+                cv::v_float32 v_interp1 = cv::v_muladd(v_lut1_1, v_xa1, cv::v_mul(v_lut1_2, v_xa));
+                cv::v_float32 v_interp2 = cv::v_muladd(v_lut2_1, v_xa1, cv::v_mul(v_lut2_2, v_xa));
+                cv::v_float32 v_res = cv::v_muladd(v_interp1, v_ya1, cv::v_mul(v_interp2, v_ya));
+
+                // Convert back to output type and store
+                if (sizeof(T) == 1) // uchar
+                {
+                    cv::v_int32 v_res_int = cv::v_round(v_res);
+                    // Store each result individually
+                    int res_arr[cv::VTraits<cv::v_int32>::max_nlanes];
+                    cv::v_store(res_arr, v_res_int);
+                    for (int i = 0; i < nlanes; i++)
+                    {
+                        dstRow[x + i] = cv::saturate_cast<uchar>(res_arr[i]) << shift;
+                    }
+                }
+                else // ushort
+                {
+                    cv::v_int32 v_res_int = cv::v_round(v_res);
+                    // Store each result individually
+                    int res_arr[cv::VTraits<cv::v_int32>::max_nlanes];
+                    cv::v_store(res_arr, v_res_int);
+                    for (int i = 0; i < nlanes; i++)
+                    {
+                        dstRow[x + i] = cv::saturate_cast<ushort>(res_arr[i]) << shift;
+                    }
+                }
+            }
+#endif
+
+            // Scalar fallback for remaining pixels
+            for (; x < src_.cols; ++x)
             {
                 int srcVal = srcRow[x] >> shift;
 
