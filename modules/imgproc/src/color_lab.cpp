@@ -92,6 +92,37 @@ template<typename _Tp> static inline cv::v_float32 splineInterpolate(const cv::v
 
 #endif
 
+#if CV_AVX512_SKX
+// AVX-512 optimized spline interpolation for 16 values at once
+template<typename _Tp> static inline __m512 splineInterpolate_avx512(const __m512& x, const _Tp* tab, int n)
+{
+    __m512i ix = _mm512_min_epi32(_mm512_max_epi32(_mm512_cvttps_epi32(x), _mm512_setzero_si512()), _mm512_set1_epi32(n-1));
+    __m512 xx = _mm512_sub_ps(x, _mm512_cvtepi32_ps(ix));
+    ix = _mm512_slli_epi32(ix, 2);
+    
+    // Extract indices and gather coefficients
+    alignas(64) int32_t idx[16];
+    _mm512_store_si512((__m512i*)idx, ix);
+    
+    __m512 t0, t1, t2, t3;
+    // Gather coefficients for each spline segment
+    alignas(16) float coeffs0[16], coeffs1[16], coeffs2[16], coeffs3[16];
+    for(int i = 0; i < 16; i++)
+    {
+        coeffs0[i] = tab[idx[i] + 0];
+        coeffs1[i] = tab[idx[i] + 1];
+        coeffs2[i] = tab[idx[i] + 2];
+        coeffs3[i] = tab[idx[i] + 3];
+    }
+    t0 = _mm512_load_ps(coeffs0);
+    t1 = _mm512_load_ps(coeffs1);
+    t2 = _mm512_load_ps(coeffs2);
+    t3 = _mm512_load_ps(coeffs3);
+    
+    return _mm512_fmadd_ps(_mm512_fmadd_ps(_mm512_fmadd_ps(t3, xx, t2), xx, t1), xx, t0);
+}
+#endif
+
 namespace cv
 {
 
@@ -2054,6 +2085,68 @@ struct RGB2Lab_f
             int i = 0;
 #if CV_SIMD
             const int vsize = VTraits<v_float32>::vlanes();
+#if CV_AVX512_SKX
+            // AVX-512 optimization for processing 16 pixels at once
+            if (CV_CPU_HAS_SUPPORT_AVX512_SKX)
+            {
+                const __m512 vc0 = _mm512_set1_ps(C0), vc1 = _mm512_set1_ps(C1), vc2 = _mm512_set1_ps(C2);
+                const __m512 vc3 = _mm512_set1_ps(C3), vc4 = _mm512_set1_ps(C4), vc5 = _mm512_set1_ps(C5);
+                const __m512 vc6 = _mm512_set1_ps(C6), vc7 = _mm512_set1_ps(C7), vc8 = _mm512_set1_ps(C8);
+                const __m512 vone = _mm512_set1_ps(1.0f), vzero = _mm512_setzero_ps();
+                const __m512 vgscale = _mm512_set1_ps(gscale);
+                const __m512 vTabScale = _mm512_set1_ps(LabCbrtTabScale);
+                const __m512 v_008856 = _mm512_set1_ps(0.008856f);
+                const __m512 v116 = _mm512_set1_ps(116.f), vm16 = _mm512_set1_ps(-16.f);
+                const __m512 v903_3 = _mm512_set1_ps(903.3f);
+                const __m512 v500 = _mm512_set1_ps(500.f), v200 = _mm512_set1_ps(200.f);
+                
+                for( ; i <= n - 16; i += 16, src += scn*16, dst += 3*16)
+                {
+                    __m512 R, G, B;
+                    if(scn == 4)
+                    {
+                        __m512 A;
+                        v_load_deinterleave(src, R, G, B, A);
+                    }
+                    else // scn == 3
+                    {
+                        v_load_deinterleave(src, R, G, B);
+                    }
+                    
+                    // Clamp to [0, 1]
+                    R = _mm512_max_ps(vzero, _mm512_min_ps(R, vone));
+                    G = _mm512_max_ps(vzero, _mm512_min_ps(G, vone));
+                    B = _mm512_max_ps(vzero, _mm512_min_ps(B, vone));
+                    
+                    if(gammaTab)
+                    {
+                        R = splineInterpolate_avx512(_mm512_mul_ps(R, vgscale), gammaTab, GAMMA_TAB_SIZE);
+                        G = splineInterpolate_avx512(_mm512_mul_ps(G, vgscale), gammaTab, GAMMA_TAB_SIZE);
+                        B = splineInterpolate_avx512(_mm512_mul_ps(B, vgscale), gammaTab, GAMMA_TAB_SIZE);
+                    }
+                    
+                    // RGB to XYZ conversion
+                    __m512 X = _mm512_fmadd_ps(R, vc0, _mm512_fmadd_ps(G, vc1, _mm512_mul_ps(B, vc2)));
+                    __m512 Y = _mm512_fmadd_ps(R, vc3, _mm512_fmadd_ps(G, vc4, _mm512_mul_ps(B, vc5)));
+                    __m512 Z = _mm512_fmadd_ps(R, vc6, _mm512_fmadd_ps(G, vc7, _mm512_mul_ps(B, vc8)));
+                    
+                    // Cube root using spline interpolation
+                    __m512 FX = splineInterpolate_avx512(_mm512_mul_ps(X, vTabScale), LabCbrtTab, LAB_CBRT_TAB_SIZE);
+                    __m512 FY = splineInterpolate_avx512(_mm512_mul_ps(Y, vTabScale), LabCbrtTab, LAB_CBRT_TAB_SIZE);
+                    __m512 FZ = splineInterpolate_avx512(_mm512_mul_ps(Z, vTabScale), LabCbrtTab, LAB_CBRT_TAB_SIZE);
+                    
+                    // Calculate Lab values
+                    __mmask16 mask = _mm512_cmp_ps_mask(Y, v_008856, _CMP_GT_OQ);
+                    __m512 L = _mm512_mask_blend_ps(mask, 
+                                                    _mm512_mul_ps(v903_3, Y),
+                                                    _mm512_fmadd_ps(v116, FY, vm16));
+                    __m512 a = _mm512_mul_ps(v500, _mm512_sub_ps(FX, FY));
+                    __m512 b = _mm512_mul_ps(v200, _mm512_sub_ps(FY, FZ));
+                    
+                    v_store_interleave(dst, L, a, b);
+                }
+            }
+#endif
             const int nrepeats = VTraits<v_float32>::nlanes == 4 ? 2 : 1;
             v_float32 vc0 = vx_setall_f32(C0), vc1 = vx_setall_f32(C1), vc2 = vx_setall_f32(C2);
             v_float32 vc3 = vx_setall_f32(C3), vc4 = vx_setall_f32(C4), vc5 = vx_setall_f32(C5);
@@ -2215,6 +2308,85 @@ struct Lab2RGBfloat
 
 #if CV_SIMD
         const int vsize = VTraits<v_float32>::vlanes();
+#if CV_AVX512_SKX
+        // AVX-512 optimization for processing 16 pixels at once
+        if (CV_CPU_HAS_SUPPORT_AVX512_SKX)
+        {
+            const __m512 v16_116 = _mm512_set1_ps(16.0f / 116.0f);
+            const __m512 vlThresh = _mm512_set1_ps(lThresh);
+            const __m512 vinv903 = _mm512_set1_ps(1.f/903.3f);
+            const __m512 v7787 = _mm512_set1_ps(7.787f);
+            const __m512 v16 = _mm512_set1_ps(16.0f);
+            const __m512 vinv116 = _mm512_set1_ps(1.f/116.0f);
+            const __m512 vpinv500 = _mm512_set1_ps(1.f/500.f);
+            const __m512 vninv200 = _mm512_set1_ps(-1.f/200.f);
+            const __m512 vfThresh = _mm512_set1_ps(fThresh);
+            const __m512 vinv7787 = _mm512_set1_ps(1.f/7.787f);
+            const __m512 vc0 = _mm512_set1_ps(C0), vc1 = _mm512_set1_ps(C1), vc2 = _mm512_set1_ps(C2);
+            const __m512 vc3 = _mm512_set1_ps(C3), vc4 = _mm512_set1_ps(C4), vc5 = _mm512_set1_ps(C5);
+            const __m512 vc6 = _mm512_set1_ps(C6), vc7 = _mm512_set1_ps(C7), vc8 = _mm512_set1_ps(C8);
+            const __m512 vone = _mm512_set1_ps(1.f), vzero = _mm512_setzero_ps();
+            const __m512 vgscale = _mm512_set1_ps(gscale);
+            const __m512 valpha = _mm512_set1_ps(alpha);
+            
+            for( ; i <= n - 16; i += 16, src += 3*16, dst += dcn*16)
+            {
+                __m512 li, ai, bi;
+                v_load_deinterleave(src, li, ai, bi);
+                
+                // Calculate Y component
+                __mmask16 limask = _mm512_cmp_ps_mask(li, vlThresh, _CMP_LE_OQ);
+                __m512 ylo = _mm512_mul_ps(li, vinv903);
+                __m512 fylo = _mm512_fmadd_ps(v7787, ylo, v16_116);
+                __m512 fyhi = _mm512_mul_ps(_mm512_add_ps(li, v16), vinv116);
+                __m512 yhi = _mm512_mul_ps(_mm512_mul_ps(fyhi, fyhi), fyhi);
+                __m512 y = _mm512_mask_blend_ps(limask, yhi, ylo);
+                __m512 fy = _mm512_mask_blend_ps(limask, fyhi, fylo);
+                
+                // Calculate X and Z components
+                __m512 fx = _mm512_fmadd_ps(ai, vpinv500, fy);
+                __m512 fz = _mm512_fmadd_ps(bi, vninv200, fy);
+                
+                // Process fx
+                __mmask16 fxmask = _mm512_cmp_ps_mask(fx, vfThresh, _CMP_LE_OQ);
+                __m512 fxlo = _mm512_mul_ps(_mm512_sub_ps(fx, v16_116), vinv7787);
+                __m512 fxhi = _mm512_mul_ps(_mm512_mul_ps(fx, fx), fx);
+                __m512 x = _mm512_mask_blend_ps(fxmask, fxhi, fxlo);
+                
+                // Process fz
+                __mmask16 fzmask = _mm512_cmp_ps_mask(fz, vfThresh, _CMP_LE_OQ);
+                __m512 fzlo = _mm512_mul_ps(_mm512_sub_ps(fz, v16_116), vinv7787);
+                __m512 fzhi = _mm512_mul_ps(_mm512_mul_ps(fz, fz), fz);
+                __m512 z = _mm512_mask_blend_ps(fzmask, fzhi, fzlo);
+                
+                // XYZ to RGB conversion
+                __m512 ro = _mm512_fmadd_ps(vc0, x, _mm512_fmadd_ps(vc1, y, _mm512_mul_ps(vc2, z)));
+                __m512 go = _mm512_fmadd_ps(vc3, x, _mm512_fmadd_ps(vc4, y, _mm512_mul_ps(vc5, z)));
+                __m512 bo = _mm512_fmadd_ps(vc6, x, _mm512_fmadd_ps(vc7, y, _mm512_mul_ps(vc8, z)));
+                
+                // Clamp to [0, 1]
+                ro = _mm512_max_ps(vzero, _mm512_min_ps(ro, vone));
+                go = _mm512_max_ps(vzero, _mm512_min_ps(go, vone));
+                bo = _mm512_max_ps(vzero, _mm512_min_ps(bo, vone));
+                
+                if (gammaTab)
+                {
+                    ro = splineInterpolate_avx512(_mm512_mul_ps(ro, vgscale), gammaTab, GAMMA_TAB_SIZE);
+                    go = splineInterpolate_avx512(_mm512_mul_ps(go, vgscale), gammaTab, GAMMA_TAB_SIZE);
+                    bo = splineInterpolate_avx512(_mm512_mul_ps(bo, vgscale), gammaTab, GAMMA_TAB_SIZE);
+                }
+                
+                if(dcn == 4)
+                {
+                    v_store_interleave(dst, ro, go, bo, valpha);
+                }
+                else // dcn == 3
+                {
+                    v_store_interleave(dst, ro, go, bo);
+                }
+            }
+        }
+#endif
         const int nrepeats = 2;
         v_float32 v16_116 = vx_setall_f32(16.0f / 116.0f);
         for( ; i <= n-vsize*nrepeats;
