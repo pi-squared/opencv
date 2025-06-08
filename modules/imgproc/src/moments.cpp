@@ -304,6 +304,114 @@ struct MomentsInTile_SIMD<ushort, int, int64>
     int64 CV_DECL_ALIGNED(16) buf64[2];
 };
 
+#if CV_SIMD128
+
+template <>
+struct MomentsInTile_SIMD<float, double, double>
+{
+    MomentsInTile_SIMD()
+    {
+        // nothing
+    }
+
+    int operator() (const float * ptr, int len, double & x0, double & x1, double & x2, double & x3)
+    {
+        int x = 0;
+
+        // Process vectorized part
+        {
+            v_float32x4 v_x0 = v_setzero_f32();
+            v_float32x4 v_x1 = v_setzero_f32();
+            v_float32x4 v_x2 = v_setzero_f32();
+            v_float32x4 v_x3 = v_setzero_f32();
+
+            // Create index vectors
+            v_float32x4 v_idx = v_float32x4(0.0f, 1.0f, 2.0f, 3.0f);
+            v_float32x4 v_delta = v_setall_f32(4.0f);
+
+            // Process 4 vectors at once for better ILP
+            for (; x <= len - 16; x += 16)
+            {
+                // Load 4 vectors
+                v_float32x4 v_p0 = v_load(ptr + x);
+                v_float32x4 v_p1 = v_load(ptr + x + 4);
+                v_float32x4 v_p2 = v_load(ptr + x + 8);
+                v_float32x4 v_p3 = v_load(ptr + x + 12);
+
+                // Accumulate m00
+                v_x0 = v_add(v_x0, v_p0);
+                v_x0 = v_add(v_x0, v_p1);
+                v_x0 = v_add(v_x0, v_p2);
+                v_x0 = v_add(v_x0, v_p3);
+
+                // Calculate indices for each vector
+                v_float32x4 v_idx0 = v_idx;
+                v_float32x4 v_idx1 = v_add(v_idx, v_delta);
+                v_float32x4 v_idx2 = v_add(v_idx1, v_delta);
+                v_float32x4 v_idx3 = v_add(v_idx2, v_delta);
+
+                // Calculate x*p for m10
+                v_float32x4 v_xp0 = v_mul(v_p0, v_idx0);
+                v_float32x4 v_xp1 = v_mul(v_p1, v_idx1);
+                v_float32x4 v_xp2 = v_mul(v_p2, v_idx2);
+                v_float32x4 v_xp3 = v_mul(v_p3, v_idx3);
+
+                v_x1 = v_add(v_x1, v_xp0);
+                v_x1 = v_add(v_x1, v_xp1);
+                v_x1 = v_add(v_x1, v_xp2);
+                v_x1 = v_add(v_x1, v_xp3);
+
+                // Calculate x²*p for m20
+                v_float32x4 v_xxp0 = v_mul(v_xp0, v_idx0);
+                v_float32x4 v_xxp1 = v_mul(v_xp1, v_idx1);
+                v_float32x4 v_xxp2 = v_mul(v_xp2, v_idx2);
+                v_float32x4 v_xxp3 = v_mul(v_xp3, v_idx3);
+
+                v_x2 = v_add(v_x2, v_xxp0);
+                v_x2 = v_add(v_x2, v_xxp1);
+                v_x2 = v_add(v_x2, v_xxp2);
+                v_x2 = v_add(v_x2, v_xxp3);
+
+                // Calculate x³*p for m30
+                v_x3 = v_add(v_x3, v_mul(v_xxp0, v_idx0));
+                v_x3 = v_add(v_x3, v_mul(v_xxp1, v_idx1));
+                v_x3 = v_add(v_x3, v_mul(v_xxp2, v_idx2));
+                v_x3 = v_add(v_x3, v_mul(v_xxp3, v_idx3));
+
+                // Update index for next iteration
+                v_idx = v_add(v_idx, v_setall_f32(16.0f));
+            }
+
+            // Process remaining vectors one at a time
+            for (; x <= len - 4; x += 4)
+            {
+                v_float32x4 v_p = v_load(ptr + x);
+                v_x0 = v_add(v_x0, v_p);
+                
+                v_float32x4 v_xp = v_mul(v_p, v_idx);
+                v_x1 = v_add(v_x1, v_xp);
+                
+                v_float32x4 v_xxp = v_mul(v_xp, v_idx);
+                v_x2 = v_add(v_x2, v_xxp);
+                
+                v_x3 = v_add(v_x3, v_mul(v_xxp, v_idx));
+                
+                v_idx = v_add(v_idx, v_delta);
+            }
+
+            // Reduce vectors to scalars
+            x0 = v_reduce_sum(v_x0);
+            x1 = v_reduce_sum(v_x1);
+            x2 = v_reduce_sum(v_x2);
+            x3 = v_reduce_sum(v_x3);
+        }
+
+        return x;
+    }
+};
+
+#endif
+
 #endif
 
 template<typename T, typename WT, typename MT>
@@ -325,6 +433,36 @@ static void momentsInTile( const Mat& img, double* moments )
         MT x3 = 0;
         x = vop(ptr, size.width, x0, x1, x2, x3);
 
+        // Process remaining pixels with loop unrolling for better performance
+        for( ; x < size.width - 3; x += 4 )
+        {
+            WT p0 = ptr[x];
+            WT p1 = ptr[x+1];
+            WT p2 = ptr[x+2];
+            WT p3 = ptr[x+3];
+            
+            // Accumulate m00
+            x0 += p0 + p1 + p2 + p3;
+            
+            // Calculate x*p for m10
+            WT xp0 = x * p0;
+            WT xp1 = (x+1) * p1;
+            WT xp2 = (x+2) * p2;
+            WT xp3 = (x+3) * p3;
+            x1 += xp0 + xp1 + xp2 + xp3;
+            
+            // Calculate x²*p for m20
+            WT xxp0 = xp0 * x;
+            WT xxp1 = xp1 * (x+1);
+            WT xxp2 = xp2 * (x+2);
+            WT xxp3 = xp3 * (x+3);
+            x2 += xxp0 + xxp1 + xxp2 + xxp3;
+            
+            // Calculate x³*p for m30
+            x3 += xxp0 * x + xxp1 * (x+1) + xxp2 * (x+2) + xxp3 * (x+3);
+        }
+        
+        // Process remaining pixels
         for( ; x < size.width; x++ )
         {
             WT p = ptr[x];
