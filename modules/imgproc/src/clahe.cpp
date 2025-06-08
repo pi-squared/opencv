@@ -42,6 +42,7 @@
 
 #include "precomp.hpp"
 #include "opencl_kernels_imgproc.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 // ----------------------------------------------------------------------
 // CLAHE
@@ -171,6 +172,25 @@ namespace
             for (const T* ptr = tile.ptr<T>(0); height--; ptr += sstep)
             {
                 int x = 0;
+#if CV_SIMD
+                // Process 8 pixels at once with better unrolling
+                for (; x <= tileROI.width - 8; x += 8)
+                {
+                    // Prefetch next cache line
+#if defined(__SSE__) && defined(CV_CPU_DISPATCH_MODE)
+                    _mm_prefetch((const char*)(ptr + x + 16), _MM_HINT_T0);
+#endif
+                    
+                    int t0 = ptr[x], t1 = ptr[x+1], t2 = ptr[x+2], t3 = ptr[x+3];
+                    int t4 = ptr[x+4], t5 = ptr[x+5], t6 = ptr[x+6], t7 = ptr[x+7];
+                    
+                    tileHist[t0 >> shift]++; tileHist[t1 >> shift]++;
+                    tileHist[t2 >> shift]++; tileHist[t3 >> shift]++;
+                    tileHist[t4 >> shift]++; tileHist[t5 >> shift]++;
+                    tileHist[t6 >> shift]++; tileHist[t7 >> shift]++;
+                }
+#endif
+                // Handle remaining pixels
                 for (; x <= tileROI.width - 4; x += 4)
                 {
                     int t0 = ptr[x], t1 = ptr[x+1];
@@ -297,7 +317,48 @@ namespace
             const T* lutPlane1 = lut_.ptr<T>(ty1 * tilesX_);
             const T* lutPlane2 = lut_.ptr<T>(ty2 * tilesX_);
 
-            for (int x = 0; x < src_.cols; ++x)
+            int x = 0;
+#if CV_SIMD
+            // Process 4 pixels at once for better instruction-level parallelism
+            for (; x <= src_.cols - 4; x += 4)
+            {
+                // Prefetch next cache line
+#if defined(__SSE__) && defined(CV_CPU_DISPATCH_MODE)
+                _mm_prefetch((const char*)(srcRow + x + 16), _MM_HINT_T0);
+#endif
+                
+                // Unrolled processing of 4 pixels
+                int srcVal0 = srcRow[x] >> shift;
+                int srcVal1 = srcRow[x+1] >> shift;
+                int srcVal2 = srcRow[x+2] >> shift;
+                int srcVal3 = srcRow[x+3] >> shift;
+                
+                int ind1_0 = ind1_p[x] + srcVal0;
+                int ind2_0 = ind2_p[x] + srcVal0;
+                int ind1_1 = ind1_p[x+1] + srcVal1;
+                int ind2_1 = ind2_p[x+1] + srcVal1;
+                int ind1_2 = ind1_p[x+2] + srcVal2;
+                int ind2_2 = ind2_p[x+2] + srcVal2;
+                int ind1_3 = ind1_p[x+3] + srcVal3;
+                int ind2_3 = ind2_p[x+3] + srcVal3;
+                
+                float res0 = (lutPlane1[ind1_0] * xa1_p[x] + lutPlane1[ind2_0] * xa_p[x]) * ya1 +
+                            (lutPlane2[ind1_0] * xa1_p[x] + lutPlane2[ind2_0] * xa_p[x]) * ya;
+                float res1 = (lutPlane1[ind1_1] * xa1_p[x+1] + lutPlane1[ind2_1] * xa_p[x+1]) * ya1 +
+                            (lutPlane2[ind1_1] * xa1_p[x+1] + lutPlane2[ind2_1] * xa_p[x+1]) * ya;
+                float res2 = (lutPlane1[ind1_2] * xa1_p[x+2] + lutPlane1[ind2_2] * xa_p[x+2]) * ya1 +
+                            (lutPlane2[ind1_2] * xa1_p[x+2] + lutPlane2[ind2_2] * xa_p[x+2]) * ya;
+                float res3 = (lutPlane1[ind1_3] * xa1_p[x+3] + lutPlane1[ind2_3] * xa_p[x+3]) * ya1 +
+                            (lutPlane2[ind1_3] * xa1_p[x+3] + lutPlane2[ind2_3] * xa_p[x+3]) * ya;
+                
+                dstRow[x] = cv::saturate_cast<T>(res0) << shift;
+                dstRow[x+1] = cv::saturate_cast<T>(res1) << shift;
+                dstRow[x+2] = cv::saturate_cast<T>(res2) << shift;
+                dstRow[x+3] = cv::saturate_cast<T>(res3) << shift;
+            }
+#endif
+            // Process remaining pixels
+            for (; x < src_.cols; ++x)
             {
                 int srcVal = srcRow[x] >> shift;
 
