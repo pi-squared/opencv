@@ -3290,6 +3290,46 @@ public:
         for (const uchar* ptr = src_.ptr<uchar>(rowRange.start); height--; ptr += sstep)
         {
             int x = 0;
+            
+#if CV_AVX512_SKX
+            // Process 64 pixels at once with AVX-512
+            for (; x <= width - 64; x += 64)
+            {
+                // Load 64 bytes of image data
+                __m512i data = _mm512_loadu_si512((const __m512i*)(ptr + x));
+                
+                // Process in 16-byte chunks for better histogram accumulation
+                // This avoids too many conflicts when updating the histogram
+                for (int i = 0; i < 64; i += 16)
+                {
+                    __m128i chunk = _mm512_extracti32x4_epi32(data, i / 16);
+                    
+                    // Process 16 bytes
+                    for (int j = 0; j < 16; j++)
+                    {
+                        int idx = _mm_extract_epi8(chunk, j);
+                        localHistogram[idx]++;
+                    }
+                }
+            }
+#elif CV_SIMD
+            // Use universal intrinsics for other SIMD architectures
+            const int vecWidth = cv::v_uint8::nlanes;
+            for (; x <= width - vecWidth; x += vecWidth)
+            {
+                cv::v_uint8 pixels = cv::vx_load(ptr + x);
+                // Process each pixel in the vector
+                // Note: This is less efficient than AVX-512 but maintains portability
+                CV_DECL_ALIGNED(CV_SIMD_WIDTH) uchar pixelData[cv::v_uint8::nlanes];
+                cv::vx_store(pixelData, pixels);
+                for (int i = 0; i < vecWidth; i++)
+                {
+                    localHistogram[pixelData[i]]++;
+                }
+            }
+#endif
+            
+            // Original 4x unrolled loop for remaining pixels
             for (; x <= width - 4; x += 4)
             {
                 int t0 = ptr[x], t1 = ptr[x+1];
@@ -3351,6 +3391,75 @@ public:
         for (; height--; sptr += sstep, dptr += dstep)
         {
             int x = 0;
+            
+#if CV_AVX512_SKX
+            // Process 64 pixels at once with AVX-512
+            for (; x <= width - 64; x += 64)
+            {
+                // Load 64 bytes of source data
+                __m512i src_data = _mm512_loadu_si512((const __m512i*)(sptr + x));
+                
+                // Split into 4 parts for LUT access (16 bytes each)
+                __m128i part0 = _mm512_extracti32x4_epi32(src_data, 0);
+                __m128i part1 = _mm512_extracti32x4_epi32(src_data, 1);
+                __m128i part2 = _mm512_extracti32x4_epi32(src_data, 2);
+                __m128i part3 = _mm512_extracti32x4_epi32(src_data, 3);
+                
+                // Process each 16-byte part
+                alignas(16) uchar result[64];
+                
+                // Part 0
+                for (int i = 0; i < 16; i++)
+                {
+                    int idx = _mm_extract_epi8(part0, i);
+                    result[i] = (uchar)lut[idx];
+                }
+                
+                // Part 1
+                for (int i = 0; i < 16; i++)
+                {
+                    int idx = _mm_extract_epi8(part1, i);
+                    result[16 + i] = (uchar)lut[idx];
+                }
+                
+                // Part 2
+                for (int i = 0; i < 16; i++)
+                {
+                    int idx = _mm_extract_epi8(part2, i);
+                    result[32 + i] = (uchar)lut[idx];
+                }
+                
+                // Part 3
+                for (int i = 0; i < 16; i++)
+                {
+                    int idx = _mm_extract_epi8(part3, i);
+                    result[48 + i] = (uchar)lut[idx];
+                }
+                
+                // Store the result
+                _mm512_storeu_si512((__m512i*)(dptr + x), _mm512_loadu_si512((const __m512i*)result));
+            }
+#elif CV_SIMD
+            // Use universal intrinsics for other SIMD architectures
+            const int vecWidth = cv::v_uint8::nlanes;
+            for (; x <= width - vecWidth; x += vecWidth)
+            {
+                cv::v_uint8 src_pixels = cv::vx_load(sptr + x);
+                CV_DECL_ALIGNED(CV_SIMD_WIDTH) uchar pixelData[cv::v_uint8::nlanes];
+                CV_DECL_ALIGNED(CV_SIMD_WIDTH) uchar result[cv::v_uint8::nlanes];
+                cv::vx_store(pixelData, src_pixels);
+                
+                // Apply LUT
+                for (int i = 0; i < vecWidth; i++)
+                {
+                    result[i] = (uchar)lut[pixelData[i]];
+                }
+                
+                cv::vx_store(dptr + x, cv::vx_load(result));
+            }
+#endif
+            
+            // Original 4x unrolled loop for remaining pixels
             for (; x <= width - 4; x += 4)
             {
                 int v0 = sptr[x];

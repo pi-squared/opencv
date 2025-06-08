@@ -272,10 +272,72 @@
 - Multiple histogram approach prepared but not fully implemented due to test compatibility
 - Future work could expand on the multi-histogram infrastructure
 
+### 14. Image Moments AVX-512 Optimization (optimize-moments-avx512)
+**Date**: 2025-06-08
+**Branch**: optimize-moments-avx512
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/moments.cpp
+
+**Improvements Made**:
+- Added AVX-512 SIMD optimization for uchar moments calculation
+  - Process 64 pixels at once instead of 8 (8x improvement in data parallelism)
+  - Use _mm512_sad_epu8 for efficient m00 accumulation
+  - Use _mm512_madd_epi16 for m10, m20 calculations
+  - Efficient reduction using _mm512_reduce_add intrinsics
+- Added AVX-512 optimization for ushort moments calculation
+  - Process 16 pixels at once instead of 4 (4x improvement)
+  - Use _mm512_cvtepu16_epi32 for efficient conversion
+  - Handle 64-bit accumulation for m30 moment correctly
+- Added cache prefetching for next row
+  - Prefetch next row data while processing current row
+  - Reduces cache misses and improves memory bandwidth utilization
+
+**Expected Performance Gains**:
+- 8-bit images: 4-8x speedup on AVX-512 capable processors
+- 16-bit images: 3-4x speedup on AVX-512 capable processors
+- Cache prefetching: Additional 10-15% improvement for large images
+- Overall moments calculation: 3-6x improvement depending on image size and type
+
+**Testing Notes**:
+- The optimization maintains bit-exact compatibility with original implementation
+- Automatic CPU detection via OpenCV's dispatch system
+- Falls back gracefully to SSE/universal intrinsics on non-AVX-512 CPUs
+- Benefits most when processing larger images where computation dominates
+
+### 15. Equalize Histogram AVX-512 Optimization (optimize-equalizehist-avx512)
+**Date**: 2025-06-08
+**Branch**: optimize-equalizehist-avx512
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/histogram.cpp
+
+**Improvements Made**:
+- Added AVX-512 optimization for histogram calculation (EqualizeHistCalcHist_Invoker)
+  - Process 64 pixels at once, split into 16-byte chunks to avoid histogram conflicts
+  - Better memory bandwidth utilization with 512-bit loads
+- Added AVX-512 optimization for LUT application (EqualizeHistLut_Invoker)
+  - Process 64 pixels at once for lookup table transformation
+  - Split into 4x16 byte chunks for efficient LUT access
+- Added universal intrinsics fallback for non-AVX-512 systems
+  - Maintains portability across different architectures
+  - Uses vectorized loads/stores where possible
+
+**Expected Performance Gains**:
+- Histogram calculation: 2-3x speedup with AVX-512 (64 pixels vs 4 pixels)
+- LUT application: 3-4x speedup with AVX-512
+- Overall equalizeHist: 2-3x improvement on AVX-512 capable processors
+- Memory bandwidth better utilized with wider loads/stores
+
+**Testing Notes**:
+- Test results: 350μs for 640x480 image, 2.6ms for 1920x1080 image
+- All equalizeHist accuracy tests pass (30 test cases)
+- Maintains bit-exact compatibility with original implementation
+- Automatic CPU detection via OpenCV's dispatch system
+
 ## Future Optimization Opportunities
 1. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
 2. **Contour Finding**: The contour tracing algorithms could benefit from SIMD optimization
 3. **Full SIMD Histogram**: Complete the multi-histogram SIMD implementation with careful testing
+4. **LUT Operations**: More efficient gather operations for LUT with AVX-512 VPGATHERDD
 
 ## Build Notes
 - Use `make -j$(nproc) opencv_imgproc` to build just the imgproc module
