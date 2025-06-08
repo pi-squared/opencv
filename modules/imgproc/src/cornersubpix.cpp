@@ -40,6 +40,7 @@
 //
 //M*/
 #include "precomp.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 void cv::cornerSubPix( InputArray _image, InputOutputArray _corners,
                        Size win, Size zeroZone, TermCriteria criteria )
@@ -109,26 +110,103 @@ void cv::cornerSubPix( InputArray _image, InputOutputArray _corners,
             const float* subpix = &subpix_buf.at<float>(1,1);
 
             // process gradient
-            for( i = 0, k = 0; i < win_h; i++, subpix += win_w + 2 )
+#if CV_SIMD
+            const int simd_width = v_float32::nlanes;
+            if (win_w >= simd_width)
             {
-                double py = i - win.height;
-
-                for( j = 0; j < win_w; j++, k++ )
+                // SIMD optimized gradient computation
+                for( i = 0, k = 0; i < win_h; i++, subpix += win_w + 2 )
                 {
-                    double m = mask[k];
-                    double tgx = subpix[j+1] - subpix[j-1];
-                    double tgy = subpix[j+win_w+2] - subpix[j-win_w-2];
-                    double gxx = tgx * tgx * m;
-                    double gxy = tgx * tgy * m;
-                    double gyy = tgy * tgy * m;
-                    double px = j - win.width;
+                    double py = i - win.height;
+                    
+                    j = 0;
+                    // Process multiple pixels at once using SIMD
+                    for( ; j <= win_w - simd_width; j += simd_width, k += simd_width )
+                    {
+                        // Load mask values
+                        v_float32 v_mask = vx_load(mask + k);
+                        
+                        // Compute horizontal gradients (tgx = subpix[j+1] - subpix[j-1])
+                        v_float32 v_left = vx_load(subpix + j - 1);
+                        v_float32 v_right = vx_load(subpix + j + 1);
+                        v_float32 v_tgx = v_sub(v_right, v_left);
+                        
+                        // Compute vertical gradients (tgy = subpix[j+win_w+2] - subpix[j-win_w-2])
+                        v_float32 v_top = vx_load(subpix + j - win_w - 2);
+                        v_float32 v_bottom = vx_load(subpix + j + win_w + 2);
+                        v_float32 v_tgy = v_sub(v_bottom, v_top);
+                        
+                        // Compute gxx, gxy, gyy
+                        v_float32 v_gxx = v_mul(v_mul(v_tgx, v_tgx), v_mask);
+                        v_float32 v_gxy = v_mul(v_mul(v_tgx, v_tgy), v_mask);
+                        v_float32 v_gyy = v_mul(v_mul(v_tgy, v_tgy), v_mask);
+                        
+                        // Accumulate sums
+                        a += v_reduce_sum(v_gxx);
+                        b += v_reduce_sum(v_gxy);
+                        c += v_reduce_sum(v_gyy);
+                        
+                        // Process px values and accumulate bb1, bb2
+                        // We need to handle this element by element due to varying px values
+                        CV_DECL_ALIGNED(32) float gxx_arr[v_float32::nlanes];
+                        CV_DECL_ALIGNED(32) float gxy_arr[v_float32::nlanes];
+                        CV_DECL_ALIGNED(32) float gyy_arr[v_float32::nlanes];
+                        v_store(gxx_arr, v_gxx);
+                        v_store(gxy_arr, v_gxy);
+                        v_store(gyy_arr, v_gyy);
+                        
+                        for (int p = 0; p < simd_width; p++) {
+                            double px = (j + p) - win.width;
+                            bb1 += gxx_arr[p] * px + gxy_arr[p] * py;
+                            bb2 += gxy_arr[p] * px + gyy_arr[p] * py;
+                        }
+                    }
+                    
+                    // Process remaining pixels
+                    for( ; j < win_w; j++, k++ )
+                    {
+                        double m = mask[k];
+                        double tgx = subpix[j+1] - subpix[j-1];
+                        double tgy = subpix[j+win_w+2] - subpix[j-win_w-2];
+                        double gxx = tgx * tgx * m;
+                        double gxy = tgx * tgy * m;
+                        double gyy = tgy * tgy * m;
+                        double px = j - win.width;
 
-                    a += gxx;
-                    b += gxy;
-                    c += gyy;
+                        a += gxx;
+                        b += gxy;
+                        c += gyy;
 
-                    bb1 += gxx * px + gxy * py;
-                    bb2 += gxy * px + gyy * py;
+                        bb1 += gxx * px + gxy * py;
+                        bb2 += gxy * px + gyy * py;
+                    }
+                }
+            }
+            else
+#endif
+            {
+                // Original scalar implementation
+                for( i = 0, k = 0; i < win_h; i++, subpix += win_w + 2 )
+                {
+                    double py = i - win.height;
+
+                    for( j = 0; j < win_w; j++, k++ )
+                    {
+                        double m = mask[k];
+                        double tgx = subpix[j+1] - subpix[j-1];
+                        double tgy = subpix[j+win_w+2] - subpix[j-win_w-2];
+                        double gxx = tgx * tgx * m;
+                        double gxy = tgx * tgy * m;
+                        double gyy = tgy * tgy * m;
+                        double px = j - win.width;
+
+                        a += gxx;
+                        b += gxy;
+                        c += gyy;
+
+                        bb1 += gxx * px + gxy * py;
+                        bb2 += gxy * px + gyy * py;
+                    }
                 }
             }
 
