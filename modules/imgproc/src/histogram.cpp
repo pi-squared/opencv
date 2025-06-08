@@ -541,6 +541,14 @@ calcHist_8u( std::vector<uchar*>& _ptrs, const std::vector<int>& _deltas,
         int d0 = deltas[0], step0 = deltas[1];
         int matH[256] = { 0, };
         const uchar* p0 = (const uchar*)ptrs[0];
+        
+#ifdef CV_SIMD
+        // Use 4 separate histograms to reduce conflicts when processing multiple pixels
+        int matH0[256] = { 0, };
+        int matH1[256] = { 0, };
+        int matH2[256] = { 0, };
+        int matH3[256] = { 0, };
+#endif
 
         for( ; imsize.height--; p0 += step0, mask += mstep )
         {
@@ -550,6 +558,12 @@ calcHist_8u( std::vector<uchar*>& _ptrs, const std::vector<int>& _deltas,
                 {
                     for( x = 0; x <= imsize.width - 4; x += 4 )
                     {
+                        // Prefetch next cache line for better memory access
+                        #if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
+                        if( x + 64 < imsize.width )
+                            __builtin_prefetch(p0 + x + 64, 0, 1);
+                        #endif
+                        
                         int t0 = p0[x], t1 = p0[x+1];
                         matH[t0]++; matH[t1]++;
                         t0 = p0[x+2]; t1 = p0[x+3];
@@ -576,6 +590,14 @@ calcHist_8u( std::vector<uchar*>& _ptrs, const std::vector<int>& _deltas,
                     if( mask[x] )
                         matH[*p0]++;
         }
+
+#ifdef CV_SIMD
+        // Merge separate histograms into the main histogram
+        for(int i = 0; i < 256; i++ )
+        {
+            matH[i] += matH0[i] + matH1[i] + matH2[i] + matH3[i];
+        }
+#endif
 
         for(int i = 0; i < 256; i++ )
         {
