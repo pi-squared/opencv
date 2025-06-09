@@ -90,7 +90,9 @@ public:
                 cv::v_uint8 v3 = cv::vx_load(ptr + x + vlen*3);
 
                 // Prefetch next cache line
-                CV_PREFETCH_READ(ptr + x + vlen4);
+#ifdef CV_CPU_OPTIMIZATION_HINTS_AVAILABLE
+                CV_CPU_OPTIMIZATION_HINTS_PREFETCH_READ(ptr + x + vlen4);
+#endif
 
                 // Process each vector into different sub-histograms
                 updateSubHistogram(v0, subHistograms[0]);
@@ -159,7 +161,7 @@ private:
         int i = 0;
         for (; i <= HIST_SZ - vlen; i += vlen)
         {
-            cv::v_int32 sum = cv::vx_setzero<cv::v_int32>();
+            cv::v_int32 sum = cv::vx_setzero_s32();
             for (int j = 0; j < SUB_HIST_COUNT; j++)
             {
                 sum = cv::v_add(sum, cv::vx_load(subHists[j] + i));
@@ -251,8 +253,10 @@ public:
                 cv::v_uint8 v3 = cv::vx_load(sptr + x + vlen*3);
 
                 // Prefetch next cache line
-                CV_PREFETCH_READ(sptr + x + vlen4);
-                CV_PREFETCH_WRITE(dptr + x + vlen4);
+#ifdef CV_CPU_OPTIMIZATION_HINTS_AVAILABLE
+                CV_CPU_OPTIMIZATION_HINTS_PREFETCH_READ(sptr + x + vlen4);
+                CV_CPU_OPTIMIZATION_HINTS_PREFETCH_WRITE(dptr + x + vlen4);
+#endif
 
                 // Apply LUT - we need to extract and process
                 // This is still somewhat serial but organized for better cache usage
