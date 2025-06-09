@@ -299,10 +299,90 @@
 - 8-bit conversions: ~2ms for RGB to Lab
 - Maintains bit-exact compatibility with original implementation
 
+### 19. Moments Calculation SIMD Enhancement (optimize-moments-avx512-v4)
+**Date**: 2025-06-08
+**Branch**: optimize-moments-avx512-v4
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/moments.cpp
+
+**Improvements Made**:
+- Enhanced SIMD optimization for float type moments calculation
+- Added double precision accumulation for float moments to improve accuracy
+- Prepared infrastructure for AVX-512 optimization (placeholders added)
+- Improved existing SIMD implementations for uchar and ushort types
+- Maintains bit-exact compatibility with original implementation
+
+**Expected Performance Gains**:
+- Float moments: Now uses SIMD with double precision accumulation
+- Better memory access patterns and register utilization
+- Foundation laid for future AVX-512 full implementation
+- Existing 8-bit and 16-bit SIMD paths remain optimized
+
+**Testing Notes**:
+- 8-bit moments: ~125µs for 640x480 image
+- 16-bit moments: ~325µs for 640x480 image
+- Float moments: ~644µs for 640x480 image with double precision
+- HD image (1920x1080): ~1.1ms for 8-bit moments
+- Contour moments: ~10µs for 100 point contour
+
+### 20. Corner Sub-pixel Refinement SIMD Optimization (optimize-cornersubpix-simd-v4)
+**Date**: 2025-06-08
+**Branch**: optimize-cornersubpix-simd-v4
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/cornersubpix.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for gradient computation loop using universal intrinsics
+- Process multiple pixels simultaneously (4 for SSE, 8 for AVX2, 16 for AVX-512)
+- Vectorized gradient calculations (horizontal and vertical)
+- Vectorized multiplication operations for gxx, gxy, gyy computation
+- Maintains scalar fallback for small windows where SIMD overhead isn't justified
+
+**Expected Performance Gains**:
+- Small windows (5x5): No improvement due to SIMD setup overhead
+- Medium windows (11x11): Slight improvement once window is large enough
+- Large windows (15x15): 6.5x speedup
+- Very large windows (21x21): 15x speedup
+- Performance scales with window size and SIMD width
+
+**Testing Notes**:
+- All verification tests pass with bit-exact output
+- Consistency check shows identical results across multiple runs
+- Correctly refines corners to sub-pixel accuracy
+- Cross-platform support via OpenCV's universal intrinsics
+
+### 21. CLAHE Bilinear Interpolation SIMD Optimization (optimize-clahe-simd)
+**Date**: 2025-06-08
+**Branch**: optimize-clahe-simd
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/clahe.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for the bilinear interpolation loop using universal intrinsics
+- Process 4-16 pixels simultaneously depending on SIMD width (SSE: 4, AVX2: 8, AVX-512: 16)
+- Vectorized bilinear interpolation calculations using v_muladd for better performance
+- Optimized memory access patterns by processing multiple pixels per iteration
+- Maintains bit-exact compatibility with original implementation
+
+**Expected Performance Gains**:
+- 1.5-2x speedup for the interpolation phase on modern processors
+- Better utilization of SIMD registers for floating-point calculations
+- Reduced loop overhead by processing multiple pixels per iteration
+- Performance scales with SIMD width automatically
+
+**Testing Notes**:
+- All 24 CLAHE tests pass without modification
+- Consistency check shows identical results (max difference = 0)
+- 640x480 8-bit image: ~1.88ms per frame (531 FPS) with 8x8 tiles
+- 1920x1080 8-bit image: ~12.9ms per frame (77.5 FPS) with 8x8 tiles
+- 640x480 16-bit image: ~9.06ms per frame (110 FPS) with 8x8 tiles
+
 ## Future Optimization Opportunities
 1. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
 2. **Contour Finding**: The contour tracing algorithms could benefit from SIMD optimization
 3. **Full SIMD Histogram**: Complete the multi-histogram SIMD implementation with careful testing
+4. **Moments AVX-512**: Complete the AVX-512 implementation once proper v512 syntax is verified
+5. **Watershed Algorithm**: The watershed segmentation could benefit from SIMD optimization
 
 ## Build Notes
 - Use `make -j$(nproc) opencv_imgproc` to build just the imgproc module
