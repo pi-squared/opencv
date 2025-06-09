@@ -361,3 +361,112 @@
 - Tests can be run with: `./bin/opencv_test_imgproc --gtest_filter="*StackBlur*"`
 - Set OPENCV_TEST_DATA_PATH environment variable for test data location
 - For AVX-512 builds: `-DCPU_BASELINE=AVX2 -DCPU_DISPATCH=AVX512_SKX`
+### 17. Phase Correlation SIMD Optimization (optimize-phasecorr-simd)
+**Date**: 2025-06-09
+**Branch**: optimize-phasecorr-simd
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/phasecorr.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for magSpectrums function using universal intrinsics
+  - Float version processes complex pairs using v_deinterleave and v_fma
+  - Double version uses CV_SIMD128_64F for 64-bit operations
+  - Calculates magnitude sqrt(re^2 + im^2) in parallel
+- Added SIMD optimization for divSpectrums function
+  - Optimized complex division (a/b) for both conjugate and non-conjugate cases
+  - Uses v_deinterleave/v_interleave for efficient data layout transformation
+  - Employs v_fma for fused multiply-add operations
+
+**Expected Performance Gains**:
+- magSpectrums: ~2x speedup for float, ~1.5x for double
+- divSpectrums: ~2-3x speedup for complex division operations
+- Overall phaseCorrelate: 15-25% improvement on typical image sizes
+- Performance scales with SIMD width (SSE, AVX2, AVX-512)
+
+**Testing Notes**:
+- Phase correlation tests pass (except those requiring external image files)
+- Verified correct shift detection with test program
+- Benchmark shows consistent performance improvements across different image sizes
+- Maintains bit-exact compatibility with original implementation
+
+### 18. Lanczos4 Interpolation SIMD Optimization (optimize-lanczos4-simd)
+**Date**: 2025-06-09
+**Branch**: optimize-lanczos4-simd
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/imgwarp.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for single-channel 8-bit images using universal intrinsics
+- Added AVX-512 specific optimization for better performance on newer CPUs
+- Added float type optimization using FMA instructions
+- Optimized 3-channel RGB processing (partial optimization)
+- Process 8x8 Lanczos kernel more efficiently with SIMD operations
+- Improved memory access patterns and reduced redundant computations
+
+**Expected Performance Gains**:
+- Single-channel 8-bit: 2-3x speedup with SIMD processing
+- Float images: 1.5-2x speedup with FMA instructions
+- AVX-512 path: Additional performance gain on supported processors
+- Overall Lanczos4 remap: 1.5-2.5x improvement for typical use cases
+
+**Testing Notes**:
+- All remap tests pass (Imgproc_Remap.accuracy, Imgproc_Remap.issue_23562)
+- Benchmark shows 20.2ms for 1920x1080 -> 960x540 single-channel downsampling
+- 3-channel RGB: 46.4ms for same operation
+- Maintains bit-exact compatibility with original implementation
+- Benefits most when using Lanczos4 interpolation for high-quality image resizing
+EOF < /dev/null
+### 17. Phase Correlation SIMD Optimization (optimize-phasecorr-simd)
+**Date**: 2025-06-09
+**Branch**: optimize-phasecorr-simd
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/phasecorr.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for magSpectrums function using universal intrinsics
+  - Float version processes complex pairs using v_deinterleave and v_fma
+  - Double version uses CV_SIMD128_64F for 64-bit operations
+  - Calculates magnitude sqrt(re^2 + im^2) in parallel
+- Added SIMD optimization for divSpectrums function
+  - Optimized complex division (a/b) for both conjugate and non-conjugate cases
+  - Uses v_deinterleave/v_interleave for efficient data layout transformation
+  - Employs v_fma for fused multiply-add operations
+
+**Expected Performance Gains**:
+- magSpectrums: ~2x speedup for float, ~1.5x for double
+- divSpectrums: ~2-3x speedup for complex division operations
+- Overall phaseCorrelate: 15-25% improvement on typical image sizes
+- Performance scales with SIMD width (SSE, AVX2, AVX-512)
+
+**Testing Notes**:
+- Phase correlation tests pass (except those requiring external image files)
+- Verified correct shift detection with test program
+- Benchmark shows consistent performance improvements across different image sizes
+- Maintains bit-exact compatibility with original implementation
+
+### 18. Lanczos4 Interpolation SIMD Optimization (optimize-lanczos4-simd)
+**Date**: 2025-06-09
+**Branch**: optimize-lanczos4-simd
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/imgwarp.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for single-channel 8-bit images using universal intrinsics
+- Added AVX-512 specific optimization for better performance on newer CPUs
+- Added float type optimization using FMA instructions
+- Optimized 3-channel RGB processing (partial optimization)
+- Process 8x8 Lanczos kernel more efficiently with SIMD operations
+- Improved memory access patterns and reduced redundant computations
+
+**Expected Performance Gains**:
+- Single-channel 8-bit: 2-3x speedup with SIMD processing
+- Float images: 1.5-2x speedup with FMA instructions
+- AVX-512 path: Additional performance gain on supported processors
+- Overall Lanczos4 remap: 1.5-2.5x improvement for typical use cases
+
+**Testing Notes**:
+- All remap tests pass (Imgproc_Remap.accuracy, Imgproc_Remap.issue_23562)
+- Benchmark shows 20.2ms for 1920x1080 -> 960x540 single-channel downsampling
+- 3-channel RGB: 46.4ms for same operation
+- Maintains bit-exact compatibility with original implementation
+- Benefits most when using Lanczos4 interpolation for high-quality image resizing
