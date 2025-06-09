@@ -59,6 +59,7 @@
 - Maintaining algorithmic correctness while improving performance
 
 ## What Doesn't Work / Challenges
+- ContourArea SIMD optimization (optimize-contourarea-simd) has compilation errors with v_cvt_f64/v_extract_low/high functions
 - Compilation time is very long for the full OpenCV build
 - Test data (opencv_extra) needs to be properly set up for running tests
 - AVX-512 specific optimizations require runtime CPU detection (already handled by OpenCV's dispatch system)
