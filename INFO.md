@@ -299,6 +299,58 @@
 - 8-bit conversions: ~2ms for RGB to Lab
 - Maintains bit-exact compatibility with original implementation
 
+### 15. Line Drawing SIMD Optimization (optimize-line-drawing-simd)
+**Date**: 2025-06-09
+**Branch**: optimize-line-drawing-simd
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/drawing.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for drawing horizontal and vertical lines
+- Optimized single-channel (CV_8UC1) horizontal lines using v_store
+- Optimized 3-channel (CV_8UC3) horizontal lines with efficient pixel assignment
+- Uses universal intrinsics for cross-platform SIMD support
+- Process multiple pixels at once for horizontal lines
+
+**Expected Performance Gains**:
+- Horizontal lines: 2-3x speedup for single-channel images
+- Horizontal lines: 1.5-2x speedup for 3-channel images  
+- No performance change for diagonal lines (fall back to scalar)
+- Benefits most when drawing many horizontal/vertical lines
+
+**Testing Notes**:
+- All existing line drawing tests pass
+- Maintains bit-exact output compared to original implementation
+- The optimization is transparent to users - same API
+- Falls back gracefully to scalar code for non-optimized cases
+
+### 16. Float Moments SIMD Optimization (optimize-moments-float-avx512)
+**Date**: 2025-06-09
+**Branch**: optimize-moments-float-avx512
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/moments.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for float type moments calculation
+- Implemented AVX-512 path processing 16 floats at a time
+- Added AVX2 path processing 8 floats at a time
+- Added SSE/NEON path processing 4 floats at a time
+- Used loop unrolling for better instruction-level parallelism
+- Maintained double precision accumulation to avoid precision loss
+
+**Expected Performance Gains**:
+- AVX-512: Process 16 pixels per iteration vs 1 in scalar code
+- AVX2: Process 8 pixels per iteration
+- SSE: Process 4 pixels per iteration
+- Loop unrolling provides additional ILP benefits
+- Expected 2-4x speedup on modern processors
+
+**Testing Notes**:
+- All OpenCV moments tests pass (Imgproc_Moments.accuracy)
+- Verified correct centroid calculation on test images
+- Maintains bit-exact compatibility with original implementation
+- Test shows correct moments for gaussian-like patterns
+
 ## Future Optimization Opportunities
 1. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
 2. **Contour Finding**: The contour tracing algorithms could benefit from SIMD optimization
