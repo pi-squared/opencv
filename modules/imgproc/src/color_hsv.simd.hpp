@@ -98,6 +98,7 @@ struct RGB2HSV_b
 
         int i = 0;
 
+
 #if (CV_SIMD || CV_SIMD_SCALABLE)
         const int vsize = VTraits<v_uint8>::vlanes();
         for ( ; i <= n - vsize;
@@ -307,6 +308,49 @@ struct RGB2HSV_f
         int i = 0, bidx = blueIdx, scn = srccn;
         float hscale = hrange*(1.f/360.f);
         n *= 3;
+
+#if CV_AVX512_SKX
+        // AVX-512 optimized path with 2x unrolling for better ILP
+        if (CV_SIMD512 && checkHardwareSupport(CV_CPU_AVX512_SKX))
+        {
+            const int vsize = VTraits<v_float32>::vlanes();
+            const int vsize2 = vsize * 2;
+            
+            // Process 2 vectors at once for better instruction-level parallelism
+            for ( ; i <= n - 6*vsize; i += 6*vsize, src += scn * vsize2)
+            {
+                v_float32 r1, g1, b1, a1;
+                v_float32 r2, g2, b2, a2;
+                
+                if(scn == 4)
+                {
+                    v_load_deinterleave(src, r1, g1, b1, a1);
+                    v_load_deinterleave(src + 4*vsize, r2, g2, b2, a2);
+                }
+                else // scn == 3
+                {
+                    v_load_deinterleave(src, r1, g1, b1);
+                    v_load_deinterleave(src + 3*vsize, r2, g2, b2);
+                }
+
+                if(bidx)
+                {
+                    swap(b1, r1);
+                    swap(b2, r2);
+                }
+
+                v_float32 h1, s1, v1;
+                v_float32 h2, s2, v2;
+                
+                // Process both vectors - allows CPU to schedule instructions better
+                process(b1, g1, r1, h1, s1, v1, hscale);
+                process(b2, g2, r2, h2, s2, v2, hscale);
+
+                v_store_interleave(dst + i, h1, s1, v1);
+                v_store_interleave(dst + i + 3*vsize, h2, s2, v2);
+            }
+        }
+#endif
 
 #if (CV_SIMD || CV_SIMD_SCALABLE)
         const int vsize = VTraits<v_float32>::vlanes();
