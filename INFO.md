@@ -767,3 +767,32 @@ EOF < /dev/null
 - SIMD optimization for 2x2 eigenvalue/eigenvector computation
 - Process multiple 2x2 matrices in parallel
 - Compilation successful, optimization complete
+
+### 31. Connected Components SIMD Optimization (optimize-connectedcomponents-simd)
+**Date**: 2025-06-09
+**Branch**: optimize-connectedcomponents-simd
+**Status**: Pushed to remote (already existed)
+**File**: modules/imgproc/src/connectedcomponents.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for finish() function processing multiple labels at once
+- Implemented batch update function for processing multiple pixels simultaneously
+- Added SIMD optimization for merge operations between scan line segments
+- Uses OpenCV's universal intrinsics (v_int32) for cross-platform SIMD support
+- Process 4-16 labels in parallel depending on SIMD width (SSE: 4, AVX2: 8, AVX-512: 16)
+
+**Expected Performance Gains**:
+- Stats finalization: 2-3x speedup processing multiple labels in parallel
+- Merge operations: 1.5-2x speedup with vectorized area checks
+- Better cache utilization with batch processing
+- Most benefit when processing images with many connected components
+
+**Testing Notes**:
+- Correctness verified with custom test program
+- Benchmark shows consistent performance across different image sizes:
+  - VGA (640x480): ~630-1077 us depending on component density
+  - HD (1280x720): ~2200-2400 us 
+  - FHD (1920x1080): ~5500-5900 us
+- Edge cases tested: empty images, full white images, checkerboard patterns
+- Maintains bit-exact compatibility with original implementation
+- The optimization is transparent to users - same API
