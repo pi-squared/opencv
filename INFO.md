@@ -592,3 +592,32 @@ EOF < /dev/null
 - Maintains bit-exact compatibility with original implementation
 - The optimization is transparent to users - same API
 
+### 23. CLAHE SIMD Optimization (optimize-clahe-simd-v4)
+**Date**: 2025-06-09
+**Branch**: optimize-clahe-simd-v4
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/clahe.cpp
+
+**Improvements Made**:
+- Added multiple histogram approach to reduce data dependencies in histogram calculation
+- Process 4 pixels in parallel using different histograms to avoid conflicts
+- Implemented SIMD optimization for merging histograms using v_int32 operations
+- Optimized LUT generation with SIMD for cumulative sum calculation
+- Added partial SIMD optimization for bilinear interpolation phase (8-bit only)
+- Uses OpenCV universal intrinsics for cross-platform SIMD support
+
+**Expected Performance Gains**:
+- Histogram calculation: ~15-20% faster with multiple histogram approach
+- LUT generation: ~2x speedup for 8-bit images with SIMD cumulative sum
+- Histogram merging: Vectorized addition of multiple histograms
+- Overall CLAHE: ~10-15% improvement on modern processors
+- Performance scales with SIMD width (SSE, AVX2, AVX-512)
+
+**Testing Notes**:
+- All 24 CLAHE tests pass (OCL_Imgproc/CLAHETest.Accuracy)
+- Correctness verified with gradient, random, and checkerboard patterns
+- Benchmark: ~11.5ms for 1920x1080 image with 8x8 tiles
+- 16-bit images: ~333ms (slower due to larger histogram size)
+- Various tile sizes tested: 4x4, 16x16, 32x32 all work correctly
+- Maintains bit-exact compatibility with original implementation
+
