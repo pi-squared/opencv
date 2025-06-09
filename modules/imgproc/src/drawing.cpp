@@ -39,6 +39,7 @@
 //
 //M*/
 #include "precomp.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 using namespace cv;
 
 namespace cv
@@ -272,6 +273,55 @@ Line( Mat& img, Point pt1, Point pt2,
     int i, count = iterator.count;
     int pix_size = (int)img.elemSize();
     const uchar* color = (const uchar*)_color;
+
+#if CV_SIMD
+    // SIMD optimization for horizontal or vertical lines
+    if( pix_size == 1 && count >= 16 && (pt1.x == pt2.x || pt1.y == pt2.y) )
+    {
+        // For horizontal lines, pixels are consecutive in memory
+        if( pt1.y == pt2.y )
+        {
+            uchar* ptr = *iterator;
+            v_uint8 v_color = vx_setall_u8(color[0]);
+            
+            // Process 16 pixels at a time
+            for( i = 0; i <= count - VTraits<v_uint8>::vlanes(); i += VTraits<v_uint8>::vlanes() )
+            {
+                v_store(ptr + i, v_color);
+            }
+            // Process remaining pixels
+            for( ; i < count; i++ )
+            {
+                ptr[i] = color[0];
+            }
+            return;
+        }
+    }
+    else if( pix_size == 3 && count >= 16 && pt1.y == pt2.y )
+    {
+        // For horizontal 3-channel lines
+        uchar* ptr = *iterator;
+        v_uint8 v_b = vx_setall_u8(color[0]);
+        v_uint8 v_g = vx_setall_u8(color[1]);
+        v_uint8 v_r = vx_setall_u8(color[2]);
+        
+        // Process pixels in groups
+        i = 0;
+        for( ; i <= count - VTraits<v_uint8>::vlanes(); i += VTraits<v_uint8>::vlanes() )
+        {
+            // Directly store the color values without loading first
+            v_store_interleave(ptr + i*3, v_b, v_g, v_r);
+        }
+        // Process remaining pixels
+        for( ; i < count; i++ )
+        {
+            ptr[i*3] = color[0];
+            ptr[i*3+1] = color[1];
+            ptr[i*3+2] = color[2];
+        }
+        return;
+    }
+#endif
 
     if( pix_size == 3 )
     {
