@@ -41,6 +41,7 @@
 //M*/
 
 #include "precomp.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 /*
  Gabor filters and such. To be greatly extended to have full texture analysis.
@@ -78,6 +79,143 @@ cv::Mat cv::getGaborKernel( Size ksize, double sigma, double theta,
     double ey = -0.5/(sigma_y*sigma_y);
     double cscale = CV_PI*2/lambd;
 
+#if CV_SIMD
+    // SIMD optimization for float type
+    if( ktype == CV_32F )
+    {
+        const int v_width = v_float32::nlanes;
+        v_float32 v_c = vx_setall_f32((float)c);
+        v_float32 v_s = vx_setall_f32((float)s);
+        v_float32 v_ex = vx_setall_f32((float)ex);
+        v_float32 v_ey = vx_setall_f32((float)ey);
+        v_float32 v_cscale = vx_setall_f32((float)cscale);
+        v_float32 v_psi = vx_setall_f32((float)psi);
+        v_float32 v_scale = vx_setall_f32((float)scale);
+
+        for( int y = ymin; y <= ymax; y++ )
+        {
+            float* kptr = kernel.ptr<float>(ymax - y);
+            v_float32 v_y = vx_setall_f32((float)y);
+            
+            int x = xmin;
+            for( ; x <= xmax - v_width + 1; x += v_width )
+            {
+                // Create vector of x values
+                CV_DECL_ALIGNED(32) float x_vals[v_float32::nlanes];
+                CV_DECL_ALIGNED(32) float cos_vals[v_float32::nlanes];
+                for(int i = 0; i < v_width; i++)
+                    x_vals[i] = (float)(x + i);
+                v_float32 v_x = vx_load_aligned(x_vals);
+                
+                // Compute rotated coordinates
+                v_float32 v_xr = v_fma(v_x, v_c, v_mul(v_y, v_s));
+                v_float32 v_yr = v_fma(v_x, v_sub(vx_setzero_f32(), v_s), v_mul(v_y, v_c));
+                
+                // Compute Gaussian envelope
+                v_float32 v_gauss_x = v_mul(v_mul(v_ex, v_xr), v_xr);
+                v_float32 v_gauss_y = v_mul(v_mul(v_ey, v_yr), v_yr);
+                v_float32 v_gauss = v_exp(v_add(v_gauss_x, v_gauss_y));
+                
+                // Compute cosine modulation
+                v_float32 v_cos_arg = v_fma(v_cscale, v_xr, v_psi);
+                // Note: OpenCV doesn't have vectorized cos, so we'll compute it element-wise
+                v_store_aligned(cos_vals, v_cos_arg);
+                for(int i = 0; i < v_width; i++)
+                    cos_vals[i] = std::cos(cos_vals[i]);
+                v_float32 v_cos = vx_load_aligned(cos_vals);
+                
+                // Final result
+                v_float32 v_result = v_mul(v_mul(v_scale, v_gauss), v_cos);
+                
+                // Store results
+                v_store(kptr + (xmax - x), v_result);
+            }
+            
+            // Process remaining elements
+            for( ; x <= xmax; x++ )
+            {
+                double xr = x*c + y*s;
+                double yr = -x*s + y*c;
+                double v = scale*std::exp(ex*xr*xr + ey*yr*yr)*cos(cscale*xr + psi);
+                kptr[xmax - x] = (float)v;
+            }
+        }
+    }
+    else if( ktype == CV_64F )
+    {
+#if CV_SIMD_64F
+        const int v_width = v_float64::nlanes;
+        v_float64 v_c = vx_setall<double>(c);
+        v_float64 v_s = vx_setall<double>(s);
+        v_float64 v_ex = vx_setall<double>(ex);
+        v_float64 v_ey = vx_setall<double>(ey);
+        v_float64 v_cscale = vx_setall<double>(cscale);
+        v_float64 v_psi = vx_setall<double>(psi);
+        v_float64 v_scale = vx_setall<double>(scale);
+
+        for( int y = ymin; y <= ymax; y++ )
+        {
+            double* kptr = kernel.ptr<double>(ymax - y);
+            v_float64 v_y = vx_setall<double>((double)y);
+            
+            int x = xmin;
+            for( ; x <= xmax - v_width + 1; x += v_width )
+            {
+                // Create vector of x values
+                CV_DECL_ALIGNED(32) double x_vals[v_float64::nlanes];
+                CV_DECL_ALIGNED(32) double cos_vals[v_float64::nlanes];
+                for(int i = 0; i < v_width; i++)
+                    x_vals[i] = (double)(x + i);
+                v_float64 v_x = vx_load_aligned(x_vals);
+                
+                // Compute rotated coordinates
+                v_float64 v_xr = v_fma(v_x, v_c, v_mul(v_y, v_s));
+                v_float64 v_yr = v_fma(v_x, v_sub(vx_setzero_f64(), v_s), v_mul(v_y, v_c));
+                
+                // Compute Gaussian envelope
+                v_float64 v_gauss_x = v_mul(v_mul(v_ex, v_xr), v_xr);
+                v_float64 v_gauss_y = v_mul(v_mul(v_ey, v_yr), v_yr);
+                v_float64 v_gauss = v_exp(v_add(v_gauss_x, v_gauss_y));
+                
+                // Compute cosine modulation
+                v_float64 v_cos_arg = v_fma(v_cscale, v_xr, v_psi);
+                // Note: OpenCV doesn't have vectorized cos, so we'll compute it element-wise
+                v_store_aligned(cos_vals, v_cos_arg);
+                for(int i = 0; i < v_width; i++)
+                    cos_vals[i] = std::cos(cos_vals[i]);
+                v_float64 v_cos = vx_load_aligned(cos_vals);
+                
+                // Final result
+                v_float64 v_result = v_mul(v_mul(v_scale, v_gauss), v_cos);
+                
+                // Store results
+                v_store(kptr + (xmax - x), v_result);
+            }
+            
+            // Process remaining elements
+            for( ; x <= xmax; x++ )
+            {
+                double xr = x*c + y*s;
+                double yr = -x*s + y*c;
+                double v = scale*std::exp(ex*xr*xr + ey*yr*yr)*cos(cscale*xr + psi);
+                kptr[xmax - x] = v;
+            }
+        }
+#else
+        // Fallback to scalar code for double when SIMD double is not available
+        for( int y = ymin; y <= ymax; y++ )
+            for( int x = xmin; x <= xmax; x++ )
+            {
+                double xr = x*c + y*s;
+                double yr = -x*s + y*c;
+
+                double v = scale*std::exp(ex*xr*xr + ey*yr*yr)*cos(cscale*xr + psi);
+                kernel.at<double>(ymax - y, xmax - x) = v;
+            }
+#endif
+    }
+#else
+    // Non-SIMD fallback
     for( int y = ymin; y <= ymax; y++ )
         for( int x = xmin; x <= xmax; x++ )
         {
@@ -90,6 +228,7 @@ cv::Mat cv::getGaborKernel( Size ksize, double sigma, double theta,
             else
                 kernel.at<double>(ymax - y, xmax - x) = v;
         }
+#endif
 
     return kernel;
 }
