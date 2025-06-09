@@ -252,7 +252,9 @@ namespace cv{
                         areas = vx_load(area_arr);
                         
                         // Check if any area > 0
-                        if (v_check_any(areas > vx_setzero_s32())) {
+                        v_int32 zero = vx_setzero_s32();
+                        v_int32 mask = v_gt(areas, zero);
+                        if (v_check_any(mask)) {
                             // Process each stat that needs merging
                             for (int i = 0; i < step; i++) {
                                 if (area_arr[i] > 0) {
