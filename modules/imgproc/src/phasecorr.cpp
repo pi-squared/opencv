@@ -106,7 +106,38 @@ static void magSpectrums( InputArray _src, OutputArray _dst)
                     dataDst[j1] = (float)std::abs(dataSrc[j1]);
             }
 
+#ifdef CV_SIMD
+            // SIMD optimization for complex magnitude calculation
+            int j_simd = j0;
+            const int step = v_float32::nlanes * 2; // Process pairs of complex numbers
+            
+            for( ; j_simd <= j1 - step; j_simd += step )
+            {
+                // Load real and imaginary parts interleaved
+                v_float32 v1 = vx_load(dataSrc + j_simd);
+                v_float32 v2 = vx_load(dataSrc + j_simd + v_float32::nlanes);
+                
+                // Separate real and imaginary parts
+                v_float32 re1, im1, re2, im2;
+                v_deinterleave(v1, v2, re1, im1, re2, im2);
+                
+                // Calculate re^2 + im^2
+                v_float32 mag_sq1 = v_fma(re1, re1, im1 * im1);
+                v_float32 mag_sq2 = v_fma(re2, re2, im2 * im2);
+                
+                // Calculate sqrt
+                v_float32 mag1 = v_sqrt(mag_sq1);
+                v_float32 mag2 = v_sqrt(mag_sq2);
+                
+                // Store results
+                v_store(dataDst + j_simd/2, mag1);
+                v_store(dataDst + j_simd/2 + v_float32::nlanes, mag2);
+            }
+            
+            for( j = j_simd; j < j1; j += 2 )
+#else
             for( j = j0; j < j1; j += 2 )
+#endif
             {
                 dataDst[j] = (float)std::sqrt((double)dataSrc[j]*dataSrc[j] + (double)dataSrc[j+1]*dataSrc[j+1]);
             }
@@ -150,7 +181,31 @@ static void magSpectrums( InputArray _src, OutputArray _dst)
                     dataDst[j1] = std::abs(dataSrc[j1]);
             }
 
+#ifdef CV_SIMD128_64F
+            // SIMD optimization for complex magnitude calculation (double precision)
+            int j_simd = j0;
+            const int step = v_float64::nlanes * 2; // Process pairs of complex numbers
+            
+            for( ; j_simd <= j1 - step; j_simd += step )
+            {
+                // Load real and imaginary parts
+                v_float64 v_re1 = vx_load(dataSrc + j_simd);
+                v_float64 v_im1 = vx_load(dataSrc + j_simd + v_float64::nlanes);
+                
+                // Calculate re^2 + im^2  
+                v_float64 mag_sq1 = v_fma(v_re1, v_re1, v_im1 * v_im1);
+                
+                // Calculate sqrt
+                v_float64 mag1 = v_sqrt(mag_sq1);
+                
+                // Store results
+                v_store(dataDst + j_simd/2, mag1);
+            }
+            
+            for( j = j_simd; j < j1; j += 2 )
+#else
             for( j = j0; j < j1; j += 2 )
+#endif
             {
                 dataDst[j] = std::sqrt(dataSrc[j]*dataSrc[j] + dataSrc[j+1]*dataSrc[j+1]);
             }
@@ -249,8 +304,104 @@ void divSpectrums( InputArray _srcA, InputArray _srcB, OutputArray _dst, int fla
                     dataC[j1] = dataA[j1] / (dataB[j1] + eps);
             }
 
+#ifdef CV_SIMD
+            // SIMD optimization for complex division
+            int j_simd = j0;
+            v_float32 v_eps = vx_setall(eps);
+            
+            if( !conjB )
+            {
+                const int step = v_float32::nlanes * 2; // Process pairs of complex numbers
+                for( ; j_simd <= j1 - step; j_simd += step )
+                {
+                    // Load complex numbers (real, imag interleaved)
+                    v_float32 a1 = vx_load(dataA + j_simd);
+                    v_float32 a2 = vx_load(dataA + j_simd + v_float32::nlanes);
+                    v_float32 b1 = vx_load(dataB + j_simd);
+                    v_float32 b2 = vx_load(dataB + j_simd + v_float32::nlanes);
+                    
+                    // Separate real and imaginary parts
+                    v_float32 a_re1, a_im1, a_re2, a_im2;
+                    v_float32 b_re1, b_im1, b_re2, b_im2;
+                    v_deinterleave(a1, a2, a_re1, a_im1, a_re2, a_im2);
+                    v_deinterleave(b1, b2, b_re1, b_im1, b_re2, b_im2);
+                    
+                    // Calculate denominator: b_re^2 + b_im^2 + eps
+                    v_float32 denom1 = v_fma(b_re1, b_re1, v_fma(b_im1, b_im1, v_eps));
+                    v_float32 denom2 = v_fma(b_re2, b_re2, v_fma(b_im2, b_im2, v_eps));
+                    
+                    // Calculate numerator real part: a_re*b_re + a_im*b_im
+                    v_float32 num_re1 = v_fma(a_re1, b_re1, a_im1 * b_im1);
+                    v_float32 num_re2 = v_fma(a_re2, b_re2, a_im2 * b_im2);
+                    
+                    // Calculate numerator imaginary part: a_im*b_re - a_re*b_im
+                    v_float32 num_im1 = v_fma(a_im1, b_re1, -(a_re1 * b_im1));
+                    v_float32 num_im2 = v_fma(a_im2, b_re2, -(a_re2 * b_im2));
+                    
+                    // Divide by denominator
+                    v_float32 c_re1 = num_re1 / denom1;
+                    v_float32 c_im1 = num_im1 / denom1;
+                    v_float32 c_re2 = num_re2 / denom2;
+                    v_float32 c_im2 = num_im2 / denom2;
+                    
+                    // Interleave and store results
+                    v_float32 c1, c2;
+                    v_interleave(c_re1, c_im1, c_re2, c_im2, c1, c2);
+                    v_store(dataC + j_simd, c1);
+                    v_store(dataC + j_simd + v_float32::nlanes, c2);
+                }
+            }
+            else
+            {
+                const int step = v_float32::nlanes * 2; // Process pairs of complex numbers
+                for( ; j_simd <= j1 - step; j_simd += step )
+                {
+                    // Load complex numbers (real, imag interleaved)
+                    v_float32 a1 = vx_load(dataA + j_simd);
+                    v_float32 a2 = vx_load(dataA + j_simd + v_float32::nlanes);
+                    v_float32 b1 = vx_load(dataB + j_simd);
+                    v_float32 b2 = vx_load(dataB + j_simd + v_float32::nlanes);
+                    
+                    // Separate real and imaginary parts
+                    v_float32 a_re1, a_im1, a_re2, a_im2;
+                    v_float32 b_re1, b_im1, b_re2, b_im2;
+                    v_deinterleave(a1, a2, a_re1, a_im1, a_re2, a_im2);
+                    v_deinterleave(b1, b2, b_re1, b_im1, b_re2, b_im2);
+                    
+                    // Calculate denominator: b_re^2 + b_im^2 + eps
+                    v_float32 denom1 = v_fma(b_re1, b_re1, v_fma(b_im1, b_im1, v_eps));
+                    v_float32 denom2 = v_fma(b_re2, b_re2, v_fma(b_im2, b_im2, v_eps));
+                    
+                    // For conjugate: use -b_im
+                    // Calculate numerator real part: a_re*b_re - a_im*(-b_im) = a_re*b_re + a_im*b_im
+                    v_float32 num_re1 = v_fma(a_re1, b_re1, -(a_im1 * (-b_im1)));
+                    v_float32 num_re2 = v_fma(a_re2, b_re2, -(a_im2 * (-b_im2)));
+                    
+                    // Calculate numerator imaginary part: a_im*b_re + a_re*(-b_im) = a_im*b_re - a_re*b_im
+                    v_float32 num_im1 = v_fma(a_im1, b_re1, a_re1 * b_im1);
+                    v_float32 num_im2 = v_fma(a_im2, b_re2, a_re2 * b_im2);
+                    
+                    // Divide by denominator
+                    v_float32 c_re1 = num_re1 / denom1;
+                    v_float32 c_im1 = num_im1 / denom1;
+                    v_float32 c_re2 = num_re2 / denom2;
+                    v_float32 c_im2 = num_im2 / denom2;
+                    
+                    // Interleave and store results
+                    v_float32 c1, c2;
+                    v_interleave(c_re1, c_im1, c_re2, c_im2, c1, c2);
+                    v_store(dataC + j_simd, c1);
+                    v_store(dataC + j_simd + v_float32::nlanes, c2);
+                }
+            }
+            
+            // Process remaining elements
+            if( !conjB )
+                for( j = j_simd; j < j1; j += 2 )
+#else
             if( !conjB )
                 for( j = j0; j < j1; j += 2 )
+#endif
                 {
                     double denom = (double)dataB[j]*dataB[j] + (double)dataB[j+1]*dataB[j+1] + (double)eps;
                     double re = (double)dataA[j]*dataB[j] + (double)dataA[j+1]*dataB[j+1];
@@ -258,8 +409,13 @@ void divSpectrums( InputArray _srcA, InputArray _srcB, OutputArray _dst, int fla
                     dataC[j] = (float)(re / denom);
                     dataC[j+1] = (float)(im / denom);
                 }
+#ifdef CV_SIMD
+            else
+                for( j = j_simd; j < j1; j += 2 )
+#else
             else
                 for( j = j0; j < j1; j += 2 )
+#endif
                 {
                     double denom = (double)dataB[j]*dataB[j] + (double)dataB[j+1]*dataB[j+1] + (double)eps;
                     double re = (double)dataA[j]*dataB[j] - (double)dataA[j+1]*dataB[j+1];
@@ -333,8 +489,78 @@ void divSpectrums( InputArray _srcA, InputArray _srcB, OutputArray _dst, int fla
                     dataC[j1] = dataA[j1] / (dataB[j1] + eps);
             }
 
+#ifdef CV_SIMD128_64F
+            // SIMD optimization for complex division (double precision)
+            int j_simd = j0;
+            v_float64 v_eps = vx_setall(eps);
+            
+            if( !conjB )
+            {
+                const int step = v_float64::nlanes * 2; // Process pairs of complex numbers
+                for( ; j_simd <= j1 - step; j_simd += step )
+                {
+                    // Load complex numbers (real, imag pairs)
+                    v_float64 a_re = vx_load(dataA + j_simd);
+                    v_float64 a_im = vx_load(dataA + j_simd + v_float64::nlanes);
+                    v_float64 b_re = vx_load(dataB + j_simd);
+                    v_float64 b_im = vx_load(dataB + j_simd + v_float64::nlanes);
+                    
+                    // Calculate denominator: b_re^2 + b_im^2 + eps
+                    v_float64 denom = v_fma(b_re, b_re, v_fma(b_im, b_im, v_eps));
+                    
+                    // Calculate numerator real part: a_re*b_re + a_im*b_im
+                    v_float64 num_re = v_fma(a_re, b_re, a_im * b_im);
+                    
+                    // Calculate numerator imaginary part: a_im*b_re - a_re*b_im
+                    v_float64 num_im = v_fma(a_im, b_re, -(a_re * b_im));
+                    
+                    // Divide by denominator
+                    v_float64 c_re = num_re / denom;
+                    v_float64 c_im = num_im / denom;
+                    
+                    // Store results  
+                    v_store(dataC + j_simd, c_re);
+                    v_store(dataC + j_simd + v_float64::nlanes, c_im);
+                }
+            }
+            else
+            {
+                const int step = v_float64::nlanes * 2; // Process pairs of complex numbers
+                for( ; j_simd <= j1 - step; j_simd += step )
+                {
+                    // Load complex numbers (real, imag pairs)
+                    v_float64 a_re = vx_load(dataA + j_simd);
+                    v_float64 a_im = vx_load(dataA + j_simd + v_float64::nlanes);
+                    v_float64 b_re = vx_load(dataB + j_simd);
+                    v_float64 b_im = vx_load(dataB + j_simd + v_float64::nlanes);
+                    
+                    // Calculate denominator: b_re^2 + b_im^2 + eps
+                    v_float64 denom = v_fma(b_re, b_re, v_fma(b_im, b_im, v_eps));
+                    
+                    // For conjugate: use -b_im
+                    // Calculate numerator real part: a_re*b_re - a_im*(-b_im) = a_re*b_re + a_im*b_im
+                    v_float64 num_re = v_fma(a_re, b_re, -(a_im * (-b_im)));
+                    
+                    // Calculate numerator imaginary part: a_im*b_re + a_re*(-b_im) = a_im*b_re - a_re*b_im
+                    v_float64 num_im = v_fma(a_im, b_re, a_re * b_im);
+                    
+                    // Divide by denominator
+                    v_float64 c_re = num_re / denom;
+                    v_float64 c_im = num_im / denom;
+                    
+                    // Store results
+                    v_store(dataC + j_simd, c_re);
+                    v_store(dataC + j_simd + v_float64::nlanes, c_im);
+                }
+            }
+            
+            // Process remaining elements
+            if( !conjB )
+                for( j = j_simd; j < j1; j += 2 )
+#else
             if( !conjB )
                 for( j = j0; j < j1; j += 2 )
+#endif
                 {
                     double denom = dataB[j]*dataB[j] + dataB[j+1]*dataB[j+1] + eps;
                     double re = dataA[j]*dataB[j] + dataA[j+1]*dataB[j+1];
@@ -342,8 +568,13 @@ void divSpectrums( InputArray _srcA, InputArray _srcB, OutputArray _dst, int fla
                     dataC[j] = re / denom;
                     dataC[j+1] = im / denom;
                 }
+#ifdef CV_SIMD128_64F
+            else
+                for( j = j_simd; j < j1; j += 2 )
+#else
             else
                 for( j = j0; j < j1; j += 2 )
+#endif
                 {
                     double denom = dataB[j]*dataB[j] + dataB[j+1]*dataB[j+1] + eps;
                     double re = dataA[j]*dataB[j] - dataA[j+1]*dataB[j+1];
