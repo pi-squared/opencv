@@ -415,6 +415,31 @@
 - 3-channel RGB: 46.4ms for same operation
 - Maintains bit-exact compatibility with original implementation
 - Benefits most when using Lanczos4 interpolation for high-quality image resizing
+
+### 19. CLAHE SIMD Optimization (optimize-clahe-simd-v4)
+**Date**: 2025-06-09
+**Branch**: optimize-clahe-simd-v4
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/clahe.cpp
+
+**Improvements Made**:
+- Added multiple histogram approach to reduce data dependencies in histogram calculation
+- Implemented SIMD optimization for merging histograms using v_int32 operations
+- Optimized LUT generation with SIMD for cumulative sum calculation
+- Added partial SIMD optimization for bilinear interpolation phase
+- Uses OpenCV universal intrinsics for cross-platform SIMD support
+
+**Expected Performance Gains**:
+- Histogram calculation: ~15-20% faster with multiple histogram approach
+- LUT generation: ~2x speedup for 8-bit images
+- Overall CLAHE: ~10-15% improvement on modern processors
+- Performance scales with SIMD width (SSE, AVX2, AVX-512)
+
+**Testing Notes**:
+- All CLAHE tests pass (24 tests)
+- Benchmark shows 1587 us per iteration for 640x480 image
+- Maintains bit-exact compatibility with original implementation
+- The optimization is transparent to users - same API
 EOF < /dev/null
 ### 17. Phase Correlation SIMD Optimization (optimize-phasecorr-simd)
 **Date**: 2025-06-09
@@ -470,3 +495,28 @@ EOF < /dev/null
 - 3-channel RGB: 46.4ms for same operation
 - Maintains bit-exact compatibility with original implementation
 - Benefits most when using Lanczos4 interpolation for high-quality image resizing
+
+### 19. CLAHE SIMD Optimization (optimize-clahe-simd-v4)
+**Date**: 2025-06-09
+**Branch**: optimize-clahe-simd-v4
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/clahe.cpp
+
+**Improvements Made**:
+- Added multiple histogram approach to reduce data dependencies in histogram calculation
+- Implemented SIMD optimization for merging histograms using v_int32 operations
+- Optimized LUT generation with SIMD for cumulative sum calculation
+- Added partial SIMD optimization for bilinear interpolation phase
+- Uses OpenCV universal intrinsics for cross-platform SIMD support
+
+**Expected Performance Gains**:
+- Histogram calculation: ~15-20% faster with multiple histogram approach
+- LUT generation: ~2x speedup for 8-bit images
+- Overall CLAHE: ~10-15% improvement on modern processors
+- Performance scales with SIMD width (SSE, AVX2, AVX-512)
+
+**Testing Notes**:
+- All CLAHE tests pass (24 tests)
+- Benchmark shows 1587 us per iteration for 640x480 image
+- Maintains bit-exact compatibility with original implementation
+- The optimization is transparent to users - same API

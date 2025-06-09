@@ -6,6 +6,7 @@
 #include "precomp.hpp"
 #include "opencl_kernels_core.hpp"
 #include "stat.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 #include "count_non_zero.simd.hpp"
 #include "count_non_zero.simd_declarations.hpp" // defines CV_CPU_DISPATCH_MODES_ALL=AVX2,...,BASELINE based on CMakeLists.txt content
@@ -163,35 +164,166 @@ void findNonZero(InputArray _src, OutputArray _idx)
 
     for( int i = 0; i < rows; i++ )
     {
-        int j, k = 0;
+        int j = 0, k = 0;
         const uchar* ptr8 = src.ptr(i);
         if( depth == CV_8U || depth == CV_8S )
         {
-            for( j = 0; j < cols; j++ )
+            #if CV_SIMD
+            {
+                v_uint8 v_zero = vx_setzero_u8();
+                int simd_end = cols - (cols % VTraits<v_uint8>::vlanes());
+                
+                for( ; j < simd_end; j += VTraits<v_uint8>::vlanes() )
+                {
+                    v_uint8 v_src = vx_load(ptr8 + j);
+                    v_uint8 v_mask = v_ne(v_src, v_zero);
+                    
+                    // Check if any element is non-zero
+                    if( v_check_any(v_mask) )
+                    {
+                        // Process each element in the vector
+                        alignas(CV_SIMD_WIDTH) uchar mask_buf[VTraits<v_uint8>::max_nlanes];
+                        v_store_aligned(mask_buf, v_mask);
+                        
+                        for( int idx = 0; idx < VTraits<v_uint8>::vlanes(); idx++ )
+                        {
+                            if( mask_buf[idx] )
+                                buf[k++] = j + idx;
+                        }
+                    }
+                }
+            }
+            #endif
+            
+            for( ; j < cols; j++ )
                 if( ptr8[j] != 0 ) buf[k++] = j;
         }
         else if( depth == CV_16U || depth == CV_16S )
         {
             const ushort* ptr16 = (const ushort*)ptr8;
-            for( j = 0; j < cols; j++ )
+            
+            #if CV_SIMD
+            {
+                v_uint16 v_zero = vx_setzero_u16();
+                int simd_end = cols - (cols % VTraits<v_uint16>::vlanes());
+                
+                for( ; j < simd_end; j += VTraits<v_uint16>::vlanes() )
+                {
+                    v_uint16 v_src = vx_load(ptr16 + j);
+                    v_uint16 v_mask = v_ne(v_src, v_zero);
+                    
+                    if( v_check_any(v_mask) )
+                    {
+                        alignas(CV_SIMD_WIDTH) ushort mask_buf[VTraits<v_uint16>::max_nlanes];
+                        v_store_aligned(mask_buf, v_mask);
+                        
+                        for( int idx = 0; idx < VTraits<v_uint16>::vlanes(); idx++ )
+                        {
+                            if( mask_buf[idx] )
+                                buf[k++] = j + idx;
+                        }
+                    }
+                }
+            }
+            #endif
+            
+            for( ; j < cols; j++ )
                 if( ptr16[j] != 0 ) buf[k++] = j;
         }
         else if( depth == CV_32S )
         {
             const int* ptr32s = (const int*)ptr8;
-            for( j = 0; j < cols; j++ )
+            
+            #if CV_SIMD
+            {
+                v_int32 v_zero = vx_setzero_s32();
+                int simd_end = cols - (cols % VTraits<v_int32>::vlanes());
+                
+                for( ; j < simd_end; j += VTraits<v_int32>::vlanes() )
+                {
+                    v_int32 v_src = vx_load(ptr32s + j);
+                    v_int32 v_mask = v_ne(v_src, v_zero);
+                    
+                    if( v_check_any(v_mask) )
+                    {
+                        alignas(CV_SIMD_WIDTH) int mask_buf[VTraits<v_int32>::max_nlanes];
+                        v_store_aligned(mask_buf, v_mask);
+                        
+                        for( int idx = 0; idx < VTraits<v_int32>::vlanes(); idx++ )
+                        {
+                            if( mask_buf[idx] )
+                                buf[k++] = j + idx;
+                        }
+                    }
+                }
+            }
+            #endif
+            
+            for( ; j < cols; j++ )
                 if( ptr32s[j] != 0 ) buf[k++] = j;
         }
         else if( depth == CV_32F )
         {
             const float* ptr32f = (const float*)ptr8;
-            for( j = 0; j < cols; j++ )
+            
+            #if CV_SIMD
+            {
+                v_float32 v_zero = vx_setzero_f32();
+                int simd_end = cols - (cols % VTraits<v_float32>::vlanes());
+                
+                for( ; j < simd_end; j += VTraits<v_float32>::vlanes() )
+                {
+                    v_float32 v_src = vx_load(ptr32f + j);
+                    v_float32 v_mask = v_ne(v_src, v_zero);
+                    
+                    if( v_check_any(v_mask) )
+                    {
+                        alignas(CV_SIMD_WIDTH) float mask_buf[VTraits<v_float32>::max_nlanes];
+                        v_store_aligned(mask_buf, v_mask);
+                        
+                        for( int idx = 0; idx < VTraits<v_float32>::vlanes(); idx++ )
+                        {
+                            if( mask_buf[idx] != 0 )
+                                buf[k++] = j + idx;
+                        }
+                    }
+                }
+            }
+            #endif
+            
+            for( ; j < cols; j++ )
                 if( ptr32f[j] != 0 ) buf[k++] = j;
         }
         else
         {
             const double* ptr64f = (const double*)ptr8;
-            for( j = 0; j < cols; j++ )
+            
+            #if CV_SIMD && CV_SIMD_64F
+            {
+                v_float64 v_zero = vx_setzero_f64();
+                int simd_end = cols - (cols % VTraits<v_float64>::vlanes());
+                
+                for( ; j < simd_end; j += VTraits<v_float64>::vlanes() )
+                {
+                    v_float64 v_src = vx_load(ptr64f + j);
+                    v_float64 v_mask = v_ne(v_src, v_zero);
+                    
+                    if( v_check_any(v_mask) )
+                    {
+                        alignas(CV_SIMD_WIDTH) double mask_buf[VTraits<v_float64>::max_nlanes];
+                        v_store_aligned(mask_buf, v_mask);
+                        
+                        for( int idx = 0; idx < VTraits<v_float64>::vlanes(); idx++ )
+                        {
+                            if( mask_buf[idx] != 0 )
+                                buf[k++] = j + idx;
+                        }
+                    }
+                }
+            }
+            #endif
+            
+            for( ; j < cols; j++ )
                 if( ptr64f[j] != 0 ) buf[k++] = j;
         }
 
