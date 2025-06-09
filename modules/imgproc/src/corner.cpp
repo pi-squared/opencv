@@ -157,7 +157,114 @@ static void calcHarris( const Mat& _cov, Mat& _dst, double k )
 
 static void eigen2x2( const float* cov, float* dst, int n )
 {
-    for( int j = 0; j < n; j++ )
+    int j = 0;
+    
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+    // SIMD optimized path for processing multiple 2x2 matrices in parallel
+    const int vlanes = VTraits<v_float32>::vlanes();
+    const v_float32 v_half = vx_setall_f32(0.5f);
+    const v_float32 v_quarter = vx_setall_f32(0.25f);
+    const v_float32 v_epsilon = vx_setall_f32(1e-4f);
+    const v_float32 v_dbl_epsilon = vx_setall_f32((float)DBL_EPSILON);
+    
+    for( ; j <= n - vlanes; j += vlanes )
+    {
+        // Load covariance matrix elements
+        v_float32 v_a, v_b, v_c;
+        v_load_deinterleave(cov + j*3, v_a, v_b, v_c);
+        
+        // Compute eigenvalues using the quadratic formula
+        // u = (a + c) * 0.5
+        v_float32 v_u = v_mul(v_add(v_a, v_c), v_half);
+        
+        // v = sqrt((a - c)^2 * 0.25 + b^2)
+        v_float32 v_diff = v_sub(v_a, v_c);
+        v_float32 v_v = v_sqrt(v_add(v_mul(v_mul(v_diff, v_diff), v_quarter), v_mul(v_b, v_b)));
+        
+        // Eigenvalues: l1 = u + v, l2 = u - v
+        v_float32 v_l1 = v_add(v_u, v_v);
+        v_float32 v_l2 = v_sub(v_u, v_v);
+        
+        // Eigenvector for l1
+        v_float32 v_x1 = v_b;
+        v_float32 v_y1 = v_sub(v_l1, v_a);
+        v_float32 v_e1 = v_abs(v_x1);
+        
+        // Check if we need the alternative computation
+        v_float32 v_sum1 = v_add(v_e1, v_abs(v_y1));
+        v_float32 v_mask1 = v_lt(v_sum1, v_epsilon);
+        
+        // Alternative: y = b, x = l1 - c
+        v_float32 v_alt_x1 = v_sub(v_l1, v_c);
+        v_float32 v_alt_y1 = v_b;
+        
+        // Select based on condition
+        v_x1 = v_select(v_mask1, v_alt_x1, v_x1);
+        v_y1 = v_select(v_mask1, v_alt_y1, v_y1);
+        
+        // Normalize eigenvector
+        v_float32 v_norm1 = v_sqrt(v_add(v_add(v_mul(v_x1, v_x1), v_mul(v_y1, v_y1)), v_dbl_epsilon));
+        v_float32 v_inv_norm1 = v_div(vx_setall_f32(1.0f), v_norm1);
+        v_x1 = v_mul(v_x1, v_inv_norm1);
+        v_y1 = v_mul(v_y1, v_inv_norm1);
+        
+        // Eigenvector for l2
+        v_float32 v_x2 = v_b;
+        v_float32 v_y2 = v_sub(v_l2, v_a);
+        v_float32 v_e2 = v_abs(v_x2);
+        
+        // Check if we need the alternative computation
+        v_float32 v_sum2 = v_add(v_e2, v_abs(v_y2));
+        v_float32 v_mask2 = v_lt(v_sum2, v_epsilon);
+        
+        // Alternative: y = b, x = l2 - c
+        v_float32 v_alt_x2 = v_sub(v_l2, v_c);
+        v_float32 v_alt_y2 = v_b;
+        
+        // Select based on condition
+        v_x2 = v_select(v_mask2, v_alt_x2, v_x2);
+        v_y2 = v_select(v_mask2, v_alt_y2, v_y2);
+        
+        // Normalize eigenvector
+        v_float32 v_norm2 = v_sqrt(v_add(v_add(v_mul(v_x2, v_x2), v_mul(v_y2, v_y2)), v_dbl_epsilon));
+        v_float32 v_inv_norm2 = v_div(vx_setall_f32(1.0f), v_norm2);
+        v_x2 = v_mul(v_x2, v_inv_norm2);
+        v_y2 = v_mul(v_y2, v_inv_norm2);
+        
+        // Store results
+        // We need to store in the pattern: [l1, l2, x1, y1, x2, y2] for each matrix
+        // This requires custom storing pattern
+        alignas(CV_SIMD_WIDTH) float buf_l1[VTraits<v_float32>::max_nlanes];
+        alignas(CV_SIMD_WIDTH) float buf_l2[VTraits<v_float32>::max_nlanes];
+        alignas(CV_SIMD_WIDTH) float buf_x1[VTraits<v_float32>::max_nlanes];
+        alignas(CV_SIMD_WIDTH) float buf_y1[VTraits<v_float32>::max_nlanes];
+        alignas(CV_SIMD_WIDTH) float buf_x2[VTraits<v_float32>::max_nlanes];
+        alignas(CV_SIMD_WIDTH) float buf_y2[VTraits<v_float32>::max_nlanes];
+        
+        v_store_aligned(buf_l1, v_l1);
+        v_store_aligned(buf_l2, v_l2);
+        v_store_aligned(buf_x1, v_x1);
+        v_store_aligned(buf_y1, v_y1);
+        v_store_aligned(buf_x2, v_x2);
+        v_store_aligned(buf_y2, v_y2);
+        
+        for( int k = 0; k < vlanes; k++ )
+        {
+            dst[6*(j+k)] = buf_l1[k];
+            dst[6*(j+k) + 1] = buf_l2[k];
+            dst[6*(j+k) + 2] = buf_x1[k];
+            dst[6*(j+k) + 3] = buf_y1[k];
+            dst[6*(j+k) + 4] = buf_x2[k];
+            dst[6*(j+k) + 5] = buf_y2[k];
+        }
+    }
+    
+    // AVX-512 optimization removed from here - it will be in a separate dispatch file
+    
+#endif // CV_SIMD
+    
+    // Scalar fallback for remaining elements
+    for( ; j < n; j++ )
     {
         double a = cov[j*3];
         double b = cov[j*3+1];
