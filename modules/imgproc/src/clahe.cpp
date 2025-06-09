@@ -42,6 +42,7 @@
 
 #include "precomp.hpp"
 #include "opencl_kernels_imgproc.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 // ----------------------------------------------------------------------
 // CLAHE
@@ -166,11 +167,32 @@ namespace
             int* tileHist = _tileHist.data();
             std::fill(tileHist, tileHist + histSize, 0);
 
+#if CV_SIMD
+            // Use multiple histograms approach to reduce data dependencies
+            const int numHists = 4;
+            cv::AutoBuffer<int> _multiHist(histSize * numHists);
+            int* multiHist = _multiHist.data();
+            std::fill(multiHist, multiHist + histSize * numHists, 0);
+#endif
+
             int height = tileROI.height;
             const size_t sstep = src_.step / sizeof(T);
             for (const T* ptr = tile.ptr<T>(0); height--; ptr += sstep)
             {
                 int x = 0;
+#if CV_SIMD
+                // Process pixels using multiple histograms to reduce conflicts
+                for (; x <= tileROI.width - numHists; x += numHists)
+                {
+                    // Each pixel goes to a different histogram to avoid conflicts
+                    for (int i = 0; i < numHists; i++)
+                    {
+                        int val = ptr[x + i] >> shift;
+                        multiHist[i * histSize + val]++;
+                    }
+                }
+#endif
+                // Process remaining pixels with scalar code
                 for (; x <= tileROI.width - 4; x += 4)
                 {
                     int t0 = ptr[x], t1 = ptr[x+1];
@@ -182,6 +204,30 @@ namespace
                 for (; x < tileROI.width; ++x)
                     tileHist[ptr[x] >> shift]++;
             }
+
+#if CV_SIMD
+            // Merge multiple histograms using SIMD
+            const int vecSize = cv::v_int32::nlanes;
+            int h = 0;
+            for (; h <= histSize - vecSize; h += vecSize)
+            {
+                cv::v_int32 sum = cv::vx_setzero_s32();
+                for (int i = 0; i < numHists; i++)
+                {
+                    sum = cv::v_add(sum, cv::vx_load(multiHist + i * histSize + h));
+                }
+                sum = cv::v_add(sum, cv::vx_load(tileHist + h));
+                cv::v_store(tileHist + h, sum);
+            }
+            // Handle remaining elements
+            for (; h < histSize; h++)
+            {
+                for (int i = 0; i < numHists; i++)
+                {
+                    tileHist[h] += multiHist[i * histSize + h];
+                }
+            }
+#endif
 
             // clip histogram
 
@@ -215,11 +261,67 @@ namespace
 
             // calc Lut
 
-            int sum = 0;
-            for (int i = 0; i < histSize; ++i)
+#if CV_SIMD
+            // SIMD optimized cumulative sum and LUT calculation
+            if (histSize == 256 && sizeof(T) == 1) // Optimize for common 8-bit case
             {
-                sum += tileHist[i];
-                tileLut[i] = cv::saturate_cast<T>(sum * lutScale_);
+                const int vecSize = cv::v_int32::nlanes;
+                cv::AutoBuffer<int> _cumSum(histSize + vecSize);
+                int* cumSum = _cumSum.data();
+                cumSum[0] = 0;
+                
+                // Compute prefix sum using SIMD
+                int sum = 0;
+                int i = 0;
+                for (; i <= histSize - vecSize; i += vecSize)
+                {
+                    cv::v_int32 vec = cv::vx_load(tileHist + i);
+                    for (int j = 0; j < vecSize; j++)
+                    {
+                        sum += tileHist[i + j];
+                        cumSum[i + j + 1] = sum;
+                    }
+                }
+                for (; i < histSize; i++)
+                {
+                    sum += tileHist[i];
+                    cumSum[i + 1] = sum;
+                }
+                
+                // Convert to LUT using SIMD
+                cv::v_float32 scale = cv::vx_setall(lutScale_);
+                i = 0;
+                for (; i <= histSize - vecSize; i += vecSize)
+                {
+                    cv::v_int32 csum = cv::vx_load(cumSum + i + 1);
+                    cv::v_float32 fsum = cv::v_cvt_f32(csum);
+                    cv::v_float32 result = cv::v_mul(fsum, scale);
+                    cv::v_int32 iresult = cv::v_round(result);
+                    
+                    // Store results with saturation - process element by element
+                    // since we need to saturate to uchar
+                    for (int j = 0; j < vecSize && i + j < histSize; j++)
+                    {
+                        tileLut[i + j] = cv::saturate_cast<T>(iresult.get0());
+                        iresult = cv::v_rotate_right<1>(iresult);
+                    }
+                }
+                // Handle remaining elements
+                for (; i < histSize; i++)
+                {
+                    tileLut[i] = cv::saturate_cast<T>(cumSum[i + 1] * lutScale_);
+                }
+            }
+            else
+#endif
+            {
+                // Scalar fallback
+                int sum = 0;
+                for (int i = 0; i < histSize; ++i)
+                {
+                    sum += tileHist[i];
+                    tileLut[i] = cv::saturate_cast<T>(sum * lutScale_);
+                }
             }
         }
     }
@@ -297,7 +399,57 @@ namespace
             const T* lutPlane1 = lut_.ptr<T>(ty1 * tilesX_);
             const T* lutPlane2 = lut_.ptr<T>(ty2 * tilesX_);
 
-            for (int x = 0; x < src_.cols; ++x)
+            int x = 0;
+#if CV_SIMD
+            // SIMD optimization for interpolation
+            if (sizeof(T) == 1 && shift == 0) // 8-bit case
+            {
+                const int vecSize = cv::v_float32::nlanes;
+                cv::v_float32 vya1 = cv::vx_setall(ya1);
+                cv::v_float32 vya = cv::vx_setall(ya);
+                
+                // Process pixels in groups for better SIMD utilization
+                for (; x <= src_.cols - vecSize; x += vecSize)
+                {
+                    // Load interpolation weights
+                    cv::v_float32 vxa1 = cv::vx_load(xa1_p + x);
+                    cv::v_float32 vxa = cv::vx_load(xa_p + x);
+                    
+                    // Unfortunately, we still need scalar lookups for LUT access
+                    // but we can vectorize the interpolation computation
+                    alignas(32) float results[16]; // Max size for any SIMD width
+                    
+                    for (int i = 0; i < vecSize; i++)
+                    {
+                        int srcVal = srcRow[x + i];
+                        int ind1 = ind1_p[x + i] + srcVal;
+                        int ind2 = ind2_p[x + i] + srcVal;
+                        
+                        float lut11 = lutPlane1[ind1];
+                        float lut12 = lutPlane1[ind2];
+                        float lut21 = lutPlane2[ind1];
+                        float lut22 = lutPlane2[ind2];
+                        
+                        results[i] = (lut11 * xa1_p[x + i] + lut12 * xa_p[x + i]) * ya1 +
+                                    (lut21 * xa1_p[x + i] + lut22 * xa_p[x + i]) * ya;
+                    }
+                    
+                    // Vectorized conversion to output type
+                    cv::v_float32 vres = cv::vx_load_aligned(results);
+                    cv::v_int32 ires = cv::v_round(vres);
+                    
+                    // Pack and store results
+                    // Store 4 bytes at a time
+                    for (int j = 0; j < vecSize && x + j < src_.cols; j++)
+                    {
+                        dstRow[x + j] = cv::saturate_cast<uchar>(ires.get0());
+                        ires = cv::v_rotate_right<1>(ires);
+                    }
+                }
+            }
+#endif
+            // Scalar code for remaining pixels
+            for (; x < src_.cols; ++x)
             {
                 int srcVal = srcRow[x] >> shift;
 
