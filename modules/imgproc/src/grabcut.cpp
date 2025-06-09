@@ -42,6 +42,8 @@
 #include "precomp.hpp"
 #include "opencv2/imgproc/detail/gcgraph.hpp"
 #include <limits>
+#include "opencv2/core/hal/intrin.hpp"
+#include "opencv2/core/hal/intrin_math.hpp"
 
 using namespace cv;
 using namespace detail;
@@ -275,12 +277,133 @@ static double calcBeta( const Mat& img )
     return beta;
 }
 
+#if CV_SIMD
+static void calcNWeightsSIMD( const Mat& img, Mat& leftW, Mat& upleftW, Mat& upW, Mat& uprightW, double beta, double gamma )
+{
+    const double gammaDivSqrt2 = gamma / std::sqrt(2.0f);
+    const float beta_f = static_cast<float>(-beta);
+    
+    leftW.create( img.rows, img.cols, CV_64FC1 );
+    upleftW.create( img.rows, img.cols, CV_64FC1 );
+    upW.create( img.rows, img.cols, CV_64FC1 );
+    uprightW.create( img.rows, img.cols, CV_64FC1 );
+    
+    for( int y = 0; y < img.rows; y++ )
+    {
+        const uchar* img_row = img.ptr<uchar>(y);
+        const uchar* img_row_prev = y > 0 ? img.ptr<uchar>(y-1) : nullptr;
+        
+        double* leftW_row = leftW.ptr<double>(y);
+        double* upleftW_row = upleftW.ptr<double>(y);
+        double* upW_row = upW.ptr<double>(y);
+        double* uprightW_row = uprightW.ptr<double>(y);
+        
+        int x = 0;
+        
+        // Process pixels using SIMD where beneficial
+        // The key optimization is using SIMD exp function for batches of pixels
+        
+        // Process all weights for each pixel
+        const int simd_width = v_float32::nlanes;
+        
+        // Process up weights with SIMD (most regular access pattern)
+        if( y > 0 )
+        {
+            // Process in chunks of SIMD width
+            x = 0;
+            for( ; x <= img.cols - simd_width; x += simd_width )
+            {
+                v_float32 dot_prods;
+                
+                // Compute dot products for this chunk
+                for( int k = 0; k < simd_width && x+k < img.cols; k++ )
+                {
+                    float b0 = img_row[3*(x+k)] - img_row_prev[3*(x+k)];
+                    float b1 = img_row[3*(x+k)+1] - img_row_prev[3*(x+k)+1];
+                    float b2 = img_row[3*(x+k)+2] - img_row_prev[3*(x+k)+2];
+                    dot_prods.val[k] = beta_f * (b0*b0 + b1*b1 + b2*b2);
+                }
+                
+                // Compute exponentials using SIMD
+                v_float32 exp_res = v_exp_default_32f<v_float32, v_int32>(dot_prods);
+                
+                // Store results
+                for( int k = 0; k < simd_width && x+k < img.cols; k++ )
+                {
+                    upW_row[x+k] = gamma * exp_res.val[k];
+                }
+            }
+        }
+        else
+        {
+            x = img.cols; // Skip SIMD processing for first row
+        }
+        
+        // Handle remaining pixels and other directions with scalar code
+        for( x = 0; x < img.cols; x++ )
+        {
+            Vec3f color(img_row[3*x], img_row[3*x+1], img_row[3*x+2]);
+            
+            // Left weight
+            if( x > 0 )
+            {
+                Vec3f left_color(img_row[3*(x-1)], img_row[3*(x-1)+1], img_row[3*(x-1)+2]);
+                Vec3f diff = color - left_color;
+                leftW_row[x] = gamma * std::exp(-beta * diff.dot(diff));
+            }
+            else
+                leftW_row[x] = 0;
+            
+            if( y > 0 )
+            {
+                // Up-left weight
+                if( x > 0 )
+                {
+                    Vec3f upleft_color(img_row_prev[3*(x-1)], img_row_prev[3*(x-1)+1], img_row_prev[3*(x-1)+2]);
+                    Vec3f diff = color - upleft_color;
+                    upleftW_row[x] = gammaDivSqrt2 * std::exp(-beta * diff.dot(diff));
+                }
+                else
+                    upleftW_row[x] = 0;
+                
+                // Up weight (if not already computed by SIMD)
+                if( x >= img.cols - (img.cols % simd_width) )
+                {
+                    Vec3f up_color(img_row_prev[3*x], img_row_prev[3*x+1], img_row_prev[3*x+2]);
+                    Vec3f diff = color - up_color;
+                    upW_row[x] = gamma * std::exp(-beta * diff.dot(diff));
+                }
+                
+                // Up-right weight
+                if( x < img.cols - 1 )
+                {
+                    Vec3f upright_color(img_row_prev[3*(x+1)], img_row_prev[3*(x+1)+1], img_row_prev[3*(x+1)+2]);
+                    Vec3f diff = color - upright_color;
+                    uprightW_row[x] = gammaDivSqrt2 * std::exp(-beta * diff.dot(diff));
+                }
+                else
+                    uprightW_row[x] = 0;
+            }
+            else
+            {
+                upleftW_row[x] = 0;
+                upW_row[x] = 0;
+                uprightW_row[x] = 0;
+            }
+        }
+    }
+}
+#endif
+
 /*
   Calculate weights of noterminal vertices of graph.
   beta and gamma - parameters of GrabCut algorithm.
  */
 static void calcNWeights( const Mat& img, Mat& leftW, Mat& upleftW, Mat& upW, Mat& uprightW, double beta, double gamma )
 {
+#if CV_SIMD
+    calcNWeightsSIMD(img, leftW, upleftW, upW, uprightW, beta, gamma);
+#else
     const double gammaDivSqrt2 = gamma / std::sqrt(2.0f);
     leftW.create( img.rows, img.cols, CV_64FC1 );
     upleftW.create( img.rows, img.cols, CV_64FC1 );
@@ -321,6 +444,7 @@ static void calcNWeights( const Mat& img, Mat& leftW, Mat& upleftW, Mat& upW, Ma
                 uprightW.at<double>(y,x) = 0;
         }
     }
+#endif
 }
 
 /*

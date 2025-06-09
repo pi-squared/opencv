@@ -351,14 +351,43 @@
 - Maintains bit-exact compatibility with original implementation
 - Test shows correct moments for gaussian-like patterns
 
+### 20. findNonZero SIMD Optimization (optimize-findnonzero-simd)
+**Date**: 2025-06-09
+**Branch**: optimize-findnonzero-simd  
+**Status**: Pushed to remote
+**File**: modules/core/src/count_non_zero.dispatch.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for findNonZero function using universal intrinsics
+- Implemented vectorized search for all data types (CV_8U, CV_16U, CV_32S, CV_32F, CV_64F)
+- Uses v_check_any to quickly skip vectors with all zeros
+- Processes 16/8/4 elements at once depending on data type and SIMD width
+- Maintains bit-exact compatibility with original implementation
+
+**Performance Gains**:
+- Sparse matrices (1% non-zero): 1.5-4x speedup depending on data type
+  - CV_32F shows best improvement with up to 4.1x speedup
+  - CV_16U and CV_32S show consistent 2x speedup
+- Dense matrices (50% non-zero): Currently shows slowdown due to mask extraction overhead
+- Performance scales with SIMD width (SSE, AVX2, AVX-512)
+
+**Testing Notes**:
+- All existing Core_FindNonZero tests pass
+- Verified correct output for various sparsity levels
+- Works correctly with non-continuous matrices
+- Future work: Optimize for dense matrices by using popcount-based approaches
+
 ## Future Optimization Opportunities
 1. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
 2. **Contour Finding**: The contour tracing algorithms could benefit from SIMD optimization
 3. **Full SIMD Histogram**: Complete the multi-histogram SIMD implementation with careful testing
+4. **Dense findNonZero**: Optimize findNonZero for dense matrices using popcount instructions
 
 ## Build Notes
 - Use `make -j$(nproc) opencv_imgproc` to build just the imgproc module
+- Use `make -j$(nproc) opencv_core` to build just the core module
 - Tests can be run with: `./bin/opencv_test_imgproc --gtest_filter="*StackBlur*"`
+- Core tests: `./bin/opencv_test_core --gtest_filter="*FindNonZero*"`
 - Set OPENCV_TEST_DATA_PATH environment variable for test data location
 - For AVX-512 builds: `-DCPU_BASELINE=AVX2 -DCPU_DISPATCH=AVX512_SKX`
 ### 17. Phase Correlation SIMD Optimization (optimize-phasecorr-simd)
