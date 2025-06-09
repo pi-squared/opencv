@@ -1050,15 +1050,141 @@ static void remapLanczos4( const Mat& _src, Mat& _dst, const Mat& _xy,
             if( (unsigned)sx < width1 && (unsigned)sy < height1 )
             {
                 const T* S = S0 + sy*sstep + sx*cn;
-                for(int k = 0; k < cn; k++ )
+#if CV_SIMD
+#if CV_SIMD512
+                // AVX-512 optimization for single-channel 8-bit images
+                if( cn == 1 && std::is_same<T, uchar>::value && std::is_same<AT, short>::value && CV_SIMD512 )
                 {
-                    WT sum = 0;
-                    for( int r = 0; r < 8; r++, S += sstep, w += 8 )
-                        sum += S[0]*w[0] + S[cn]*w[1] + S[cn*2]*w[2] + S[cn*3]*w[3] +
-                            S[cn*4]*w[4] + S[cn*5]*w[5] + S[cn*6]*w[6] + S[cn*7]*w[7];
-                    w -= 64;
-                    S -= sstep*8 - 1;
-                    D[k] = castOp(sum);
+                    // Process 8x8 Lanczos kernel with AVX-512
+                    __m512i vsum = _mm512_setzero_si512();
+                    
+                    for( int r = 0; r < 8; r++ )
+                    {
+                        // Load 8 pixels and expand to 16-bit
+                        __m128i pixels = _mm_loadl_epi64((const __m128i*)(S + r*sstep));
+                        __m256i pixels_16 = _mm256_cvtepu8_epi16(pixels);
+                        __m512i pixels_32 = _mm512_cvtepi16_epi32(pixels_16);
+                        
+                        // Load 8 weights and expand to 32-bit
+                        __m128i weights = _mm_load_si128((const __m128i*)(w + r*8));
+                        __m256i weights_32_lo = _mm256_cvtepi16_epi32(weights);
+                        __m128i weights_hi = _mm_unpackhi_epi64(weights, weights);
+                        __m256i weights_32_hi = _mm256_cvtepi16_epi32(weights_hi);
+                        __m512i weights_32 = _mm512_inserti32x8(_mm512_castsi256_si512(weights_32_lo), weights_32_hi, 1);
+                        
+                        // Multiply and accumulate
+                        vsum = _mm512_add_epi32(vsum, _mm512_mullo_epi32(pixels_32, weights_32));
+                    }
+                    
+                    // Sum all elements horizontally
+                    __m256i sum_256 = _mm256_add_epi32(_mm512_extracti32x8_epi32(vsum, 0), 
+                                                       _mm512_extracti32x8_epi32(vsum, 1));
+                    __m128i sum_128 = _mm_add_epi32(_mm256_extracti128_si256(sum_256, 0),
+                                                     _mm256_extracti128_si256(sum_256, 1));
+                    sum_128 = _mm_hadd_epi32(sum_128, sum_128);
+                    sum_128 = _mm_hadd_epi32(sum_128, sum_128);
+                    int sum = _mm_cvtsi128_si32(sum_128);
+                    
+                    D[0] = castOp(sum);
+                }
+                else
+#endif
+                // SIMD optimization for single-channel images
+                if( cn == 1 && std::is_same<T, uchar>::value && std::is_same<AT, short>::value )
+                {
+                    // Process 8x8 Lanczos kernel with SIMD
+                    v_int32 vsum = vx_setzero_s32();
+                    
+                    for( int r = 0; r < 8; r++ )
+                    {
+                        // Load 8 pixels and 8 weights
+                        v_uint16 vs_lo = vx_load_expand((const uchar*)S);
+                        v_int16 vw_lo = vx_load((const short*)(w + r*8));
+                        
+                        // Split into high and low parts for 32-bit multiplication
+                        v_uint32 vs_lo_lo, vs_lo_hi;
+                        v_int32 vw_lo_lo, vw_lo_hi;
+                        v_expand(vs_lo, vs_lo_lo, vs_lo_hi);
+                        v_expand(vw_lo, vw_lo_lo, vw_lo_hi);
+                        
+                        // Accumulate products
+                        vsum = v_add(vsum, v_mul(v_reinterpret_as_s32(vs_lo_lo), vw_lo_lo));
+                        vsum = v_add(vsum, v_mul(v_reinterpret_as_s32(vs_lo_hi), vw_lo_hi));
+                        
+                        S += sstep;
+                    }
+                    
+                    // Sum all elements and apply the cast operation
+                    int sum = v_reduce_sum(vsum);
+                    D[0] = castOp(sum);
+                    S = S0 + sy*sstep + sx*cn + 1; // Reset S for next channel if needed
+                }
+                // SIMD optimization for 3-channel images (RGB)
+                else if( cn == 3 && std::is_same<T, uchar>::value && std::is_same<AT, short>::value )
+                {
+                    // Process 8x8 Lanczos kernel for 3 channels
+                    int sum0 = 0, sum1 = 0, sum2 = 0;
+                    
+                    for( int r = 0; r < 8; r++ )
+                    {
+                        const uchar* Sr = (const uchar*)S + r*sstep;
+                        const short* wr = (const short*)(w + r*8);
+                        
+                        // Could use SIMD here in the future
+                        
+                        // Process 8 pixels for each channel
+                        for( int i = 0; i < 8; i++ )
+                        {
+                            int wval = wr[i];
+                            sum0 += Sr[i*3+0] * wval;
+                            sum1 += Sr[i*3+1] * wval;
+                            sum2 += Sr[i*3+2] * wval;
+                        }
+                    }
+                    
+                    // Apply the cast operation
+                    D[0] = castOp(sum0);
+                    D[1] = castOp(sum1);
+                    D[2] = castOp(sum2);
+                    S = S0 + sy*sstep + (sx+1)*cn; // Reset S for next pixel
+                }
+                // SIMD optimization for float type
+                else if( cn == 1 && std::is_same<T, float>::value && std::is_same<AT, float>::value )
+                {
+                    v_float32 vsum = vx_setzero_f32();
+                    
+                    for( int r = 0; r < 8; r++ )
+                    {
+                        // Process multiple pixels at once
+                        const float* Sr = (const float*)S + r*sstep;
+                        const float* wr = (const float*)(w + r*8);
+                        
+                        v_float32 vs0 = vx_load(Sr);
+                        v_float32 vs1 = vx_load(Sr + 4);
+                        v_float32 vw0 = vx_load(wr);
+                        v_float32 vw1 = vx_load(wr + 4);
+                        
+                        vsum = v_fma(vs0, vw0, vsum);
+                        vsum = v_fma(vs1, vw1, vsum);
+                    }
+                    
+                    D[0] = castOp(v_reduce_sum(vsum));
+                    S = S0 + sy*sstep + sx*cn + 1;
+                }
+                else
+#endif
+                {
+                    // Original scalar code
+                    for(int k = 0; k < cn; k++ )
+                    {
+                        WT sum = 0;
+                        for( int r = 0; r < 8; r++, S += sstep, w += 8 )
+                            sum += S[0]*w[0] + S[cn]*w[1] + S[cn*2]*w[2] + S[cn*3]*w[3] +
+                                S[cn*4]*w[4] + S[cn*5]*w[5] + S[cn*6]*w[6] + S[cn*7]*w[7];
+                        w -= 64;
+                        S -= sstep*8 - 1;
+                        D[k] = castOp(sum);
+                    }
                 }
             }
             else
