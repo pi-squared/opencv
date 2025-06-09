@@ -621,3 +621,32 @@ EOF < /dev/null
 - Various tile sizes tested: 4x4, 16x16, 32x32 all work correctly
 - Maintains bit-exact compatibility with original implementation
 
+### 24. FindNonZero SIMD Optimization (optimize-findnonzero-simd)
+**Date**: 2025-06-09
+**Branch**: optimize-findnonzero-simd
+**Status**: Pushed to remote
+**File**: modules/core/src/count_non_zero.dispatch.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for findNonZero function using universal intrinsics
+- Implemented optimizations for all data types (8-bit, 16-bit, 32-bit int/float, 64-bit double)
+- Uses v_check_any to quickly skip vectors with all zeros
+- Process multiple elements in parallel (16-64 depending on type and SIMD width)
+- Stores non-zero indices directly without intermediate mask arrays
+- Falls back to scalar code for remaining elements
+
+**Expected Performance Gains**:
+- 8-bit types: Process 16-64 elements per iteration (SSE: 16, AVX2: 32, AVX-512: 64)
+- 16-bit types: Process 8-32 elements per iteration
+- 32-bit types: Process 4-16 elements per iteration  
+- 64-bit double: Process 2-8 elements per iteration
+- Overall speedup: 2-4x for sparse matrices with ~1% non-zero elements
+
+**Testing Notes**:
+- Custom test program verified correctness for all data types
+- Found correct number of non-zero points in all test cases
+- Performance test: 1238.9 us for 1920x1080 CV_8U with 1% non-zeros
+- Performance test: 1101.3 us for 1920x1080 CV_32F with 1% non-zeros
+- Maintains bit-exact compatibility with original implementation
+- The optimization is transparent to users - same API
+
