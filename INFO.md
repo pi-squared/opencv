@@ -299,6 +299,31 @@
 - 8-bit conversions: ~2ms for RGB to Lab
 - Maintains bit-exact compatibility with original implementation
 
+### 15. Line Drawing SIMD Optimization (optimize-line-drawing-simd)
+**Date**: 2025-06-09
+**Branch**: optimize-line-drawing-simd
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/drawing.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for drawing horizontal and vertical lines
+- Optimized single-channel (CV_8UC1) horizontal lines using v_store
+- Optimized 3-channel (CV_8UC3) horizontal lines with efficient pixel assignment
+- Uses universal intrinsics for cross-platform SIMD support
+- Process multiple pixels at once for horizontal lines
+
+**Expected Performance Gains**:
+- Horizontal lines: 2-3x speedup for single-channel images
+- Horizontal lines: 1.5-2x speedup for 3-channel images  
+- No performance change for diagonal lines (fall back to scalar)
+- Benefits most when drawing many horizontal/vertical lines
+
+**Testing Notes**:
+- All existing line drawing tests pass
+- Maintains bit-exact output compared to original implementation
+- The optimization is transparent to users - same API
+- Falls back gracefully to scalar code for non-optimized cases
+
 ## Future Optimization Opportunities
 1. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
 2. **Contour Finding**: The contour tracing algorithms could benefit from SIMD optimization

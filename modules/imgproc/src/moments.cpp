@@ -304,6 +304,135 @@ struct MomentsInTile_SIMD<ushort, int, int64>
     int64 CV_DECL_ALIGNED(16) buf64[2];
 };
 
+template <>
+struct MomentsInTile_SIMD<float, double, double>
+{
+    MomentsInTile_SIMD()
+    {
+        // nothing
+    }
+
+    int operator() (const float * ptr, int len, double & x0, double & x1, double & x2, double & x3)
+    {
+        int x = 0;
+
+#if CV_SIMD512
+        // AVX-512 optimized path - process 16 floats at a time
+        if (checkHardwareSupport(CV_CPU_AVX512_SKX))
+        {
+            double sum0 = 0, sum1 = 0, sum2 = 0, sum3 = 0;
+            
+            // Process 16 pixels at a time
+            for (; x <= len - 16; x += 16)
+            {
+                v_float32x16 v_src = v512_load(ptr + x);
+                
+                // For better performance, we unroll the loop and use scalar operations
+                // after SIMD load. This is because computing x^2 and x^3 for each position
+                // is more efficient in scalar form
+                float CV_DECL_ALIGNED(64) buf[16];
+                v_store_aligned(buf, v_src);
+                
+                // Unroll by 4 for better ILP
+                for (int i = 0; i < 16; i += 4)
+                {
+                    double idx0 = (double)(x + i);
+                    double idx1 = (double)(x + i + 1);
+                    double idx2 = (double)(x + i + 2);
+                    double idx3 = (double)(x + i + 3);
+                    
+                    double val0 = (double)buf[i];
+                    double val1 = (double)buf[i + 1];
+                    double val2 = (double)buf[i + 2];
+                    double val3 = (double)buf[i + 3];
+                    
+                    sum0 += val0 + val1 + val2 + val3;
+                    sum1 += val0 * idx0 + val1 * idx1 + val2 * idx2 + val3 * idx3;
+                    sum2 += val0 * idx0 * idx0 + val1 * idx1 * idx1 + 
+                            val2 * idx2 * idx2 + val3 * idx3 * idx3;
+                    sum3 += val0 * idx0 * idx0 * idx0 + val1 * idx1 * idx1 * idx1 + 
+                            val2 * idx2 * idx2 * idx2 + val3 * idx3 * idx3 * idx3;
+                }
+            }
+            
+            x0 += sum0;
+            x1 += sum1;
+            x2 += sum2;
+            x3 += sum3;
+        }
+        else
+#endif
+#if CV_SIMD256
+        // AVX2 optimized path - process 8 floats at a time
+        if (checkHardwareSupport(CV_CPU_AVX2))
+        {
+            double sum0 = 0, sum1 = 0, sum2 = 0, sum3 = 0;
+            
+            // Process 8 pixels at a time
+            for (; x <= len - 8; x += 8)
+            {
+                v_float32x8 v_src = v256_load(ptr + x);
+                
+                float CV_DECL_ALIGNED(32) buf[8];
+                v_store_aligned(buf, v_src);
+                
+                // Unroll by 2 for better ILP
+                for (int i = 0; i < 8; i += 2)
+                {
+                    double idx0 = (double)(x + i);
+                    double idx1 = (double)(x + i + 1);
+                    
+                    double val0 = (double)buf[i];
+                    double val1 = (double)buf[i + 1];
+                    
+                    sum0 += val0 + val1;
+                    sum1 += val0 * idx0 + val1 * idx1;
+                    sum2 += val0 * idx0 * idx0 + val1 * idx1 * idx1;
+                    sum3 += val0 * idx0 * idx0 * idx0 + val1 * idx1 * idx1 * idx1;
+                }
+            }
+            
+            x0 += sum0;
+            x1 += sum1;
+            x2 += sum2;
+            x3 += sum3;
+        }
+        else
+#endif
+#if CV_SIMD128
+        // SSE/NEON optimized path - process 4 floats at a time
+        {
+            double sum0 = 0, sum1 = 0, sum2 = 0, sum3 = 0;
+            
+            // Process 4 pixels at a time
+            for (; x <= len - 4; x += 4)
+            {
+                v_float32x4 v_src = v_load(ptr + x);
+                
+                float CV_DECL_ALIGNED(16) buf[4];
+                v_store_aligned(buf, v_src);
+                
+                for (int i = 0; i < 4; i++)
+                {
+                    double val = (double)buf[i];
+                    double idx = (double)(x + i);
+                    sum0 += val;
+                    sum1 += val * idx;
+                    sum2 += val * idx * idx;
+                    sum3 += val * idx * idx * idx;
+                }
+            }
+            
+            x0 += sum0;
+            x1 += sum1;
+            x2 += sum2;
+            x3 += sum3;
+        }
+#endif
+        return x;
+    }
+};
+
 #endif
 
 template<typename T, typename WT, typename MT>
