@@ -100,9 +100,9 @@ cv::Mat cv::getGaborKernel( Size ksize, double sigma, double theta,
             int x = xmin;
             for( ; x <= xmax - v_width + 1; x += v_width )
             {
-                // Create vector of x values
-                CV_DECL_ALIGNED(32) float x_vals[v_float32::nlanes];
-                CV_DECL_ALIGNED(32) float cos_vals[v_float32::nlanes];
+                // Create vector of x values (max SIMD width is 16 for AVX-512)
+                CV_DECL_ALIGNED(32) float x_vals[16];
+                CV_DECL_ALIGNED(32) float cos_vals[16];
                 for(int i = 0; i < v_width; i++)
                     x_vals[i] = (float)(x + i);
                 v_float32 v_x = vx_load_aligned(x_vals);
@@ -127,8 +127,11 @@ cv::Mat cv::getGaborKernel( Size ksize, double sigma, double theta,
                 // Final result
                 v_float32 v_result = v_mul(v_mul(v_scale, v_gauss), v_cos);
                 
-                // Store results
-                v_store(kptr + (xmax - x), v_result);
+                // Store results - need to reverse the order since kernel is indexed as (xmax - x)
+                CV_DECL_ALIGNED(32) float result_vals[16];
+                v_store_aligned(result_vals, v_result);
+                for(int i = 0; i < v_width; i++)
+                    kptr[xmax - (x + i)] = result_vals[i];
             }
             
             // Process remaining elements
@@ -161,9 +164,9 @@ cv::Mat cv::getGaborKernel( Size ksize, double sigma, double theta,
             int x = xmin;
             for( ; x <= xmax - v_width + 1; x += v_width )
             {
-                // Create vector of x values
-                CV_DECL_ALIGNED(32) double x_vals[v_float64::nlanes];
-                CV_DECL_ALIGNED(32) double cos_vals[v_float64::nlanes];
+                // Create vector of x values (max SIMD width for double is 8 for AVX-512)
+                CV_DECL_ALIGNED(32) double x_vals[8];
+                CV_DECL_ALIGNED(32) double cos_vals[8];
                 for(int i = 0; i < v_width; i++)
                     x_vals[i] = (double)(x + i);
                 v_float64 v_x = vx_load_aligned(x_vals);
@@ -188,8 +191,11 @@ cv::Mat cv::getGaborKernel( Size ksize, double sigma, double theta,
                 // Final result
                 v_float64 v_result = v_mul(v_mul(v_scale, v_gauss), v_cos);
                 
-                // Store results
-                v_store(kptr + (xmax - x), v_result);
+                // Store results - need to reverse the order since kernel is indexed as (xmax - x)
+                CV_DECL_ALIGNED(32) double result_vals[8];
+                v_store_aligned(result_vals, v_result);
+                for(int i = 0; i < v_width; i++)
+                    kptr[xmax - (x + i)] = result_vals[i];
             }
             
             // Process remaining elements
