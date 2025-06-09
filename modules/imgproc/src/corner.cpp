@@ -157,7 +157,121 @@ static void calcHarris( const Mat& _cov, Mat& _dst, double k )
 
 static void eigen2x2( const float* cov, float* dst, int n )
 {
-    for( int j = 0; j < n; j++ )
+    int j = 0;
+    
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+    {
+        const int vlanes = VTraits<v_float32>::vlanes();
+        v_float32 v_half = vx_setall_f32(0.5f);
+        v_float32 v_quarter = vx_setall_f32(0.25f);
+        v_float32 v_eps = vx_setall_f32(FLT_EPSILON);
+        v_float32 v_thresh = vx_setall_f32(1e-4f);
+        
+        // Process multiple 2x2 matrices in parallel
+        for( ; j <= n - vlanes; j += vlanes )
+        {
+            // Load covariance matrix elements
+            v_float32 v_a, v_b, v_c;
+            v_load_deinterleave(cov + j*3, v_a, v_b, v_c);
+            
+            // Compute eigenvalues using the quadratic formula
+            // For symmetric 2x2 matrix [a b; b c], eigenvalues are:
+            // λ = ((a+c) ± sqrt((a-c)^2 + 4b^2)) / 2
+            v_float32 v_sum = v_add(v_a, v_c);
+            v_float32 v_diff = v_sub(v_a, v_c);
+            v_float32 v_u = v_mul(v_sum, v_half);
+            
+            // v = sqrt((a-c)^2/4 + b^2)
+            v_float32 v_diff_sq = v_mul(v_diff, v_diff);
+            v_float32 v_b_sq = v_mul(v_b, v_b);
+            v_float32 v_discriminant = v_muladd(v_diff_sq, v_quarter, v_b_sq);
+            v_float32 v_v = v_sqrt(v_discriminant);
+            
+            v_float32 v_l1 = v_add(v_u, v_v);  // First eigenvalue
+            v_float32 v_l2 = v_sub(v_u, v_v);  // Second eigenvalue
+            
+            // Compute eigenvectors
+            // For eigenvalue λ, eigenvector is [b, λ-a] normalized
+            
+            // First eigenvector
+            v_float32 v_x1 = v_b;
+            v_float32 v_y1 = v_sub(v_l1, v_a);
+            
+            // Handle special case when both x and y are small
+            v_float32 v_e1 = v_abs(v_x1);
+            v_float32 v_abs_y1 = v_abs(v_y1);
+            v_float32 v_sum1 = v_add(v_e1, v_abs_y1);
+            v_float32 v_is_small1 = v_lt(v_sum1, v_thresh);
+            
+            // Alternative: use [λ-c, b] when [b, λ-a] is too small
+            v_float32 v_x1_alt = v_sub(v_l1, v_c);
+            v_float32 v_y1_alt = v_b;
+            
+            v_x1 = v_select(v_is_small1, v_x1_alt, v_x1);
+            v_y1 = v_select(v_is_small1, v_y1_alt, v_y1);
+            
+            // Normalize first eigenvector
+            v_float32 v_norm1_sq = v_muladd(v_x1, v_x1, v_mul(v_y1, v_y1));
+            v_float32 v_norm1 = v_sqrt(v_add(v_norm1_sq, v_eps));
+            v_float32 v_inv_norm1 = v_div(vx_setall_f32(1.0f), v_norm1);
+            v_x1 = v_mul(v_x1, v_inv_norm1);
+            v_y1 = v_mul(v_y1, v_inv_norm1);
+            
+            // Second eigenvector
+            v_float32 v_x2 = v_b;
+            v_float32 v_y2 = v_sub(v_l2, v_a);
+            
+            // Handle special case for second eigenvector
+            v_float32 v_e2 = v_abs(v_x2);
+            v_float32 v_abs_y2 = v_abs(v_y2);
+            v_float32 v_sum2 = v_add(v_e2, v_abs_y2);
+            v_float32 v_is_small2 = v_lt(v_sum2, v_thresh);
+            
+            v_float32 v_x2_alt = v_sub(v_l2, v_c);
+            v_float32 v_y2_alt = v_b;
+            
+            v_x2 = v_select(v_is_small2, v_x2_alt, v_x2);
+            v_y2 = v_select(v_is_small2, v_y2_alt, v_y2);
+            
+            // Normalize second eigenvector
+            v_float32 v_norm2_sq = v_muladd(v_x2, v_x2, v_mul(v_y2, v_y2));
+            v_float32 v_norm2 = v_sqrt(v_add(v_norm2_sq, v_eps));
+            v_float32 v_inv_norm2 = v_div(vx_setall_f32(1.0f), v_norm2);
+            v_x2 = v_mul(v_x2, v_inv_norm2);
+            v_y2 = v_mul(v_y2, v_inv_norm2);
+            
+            // Store results
+            // Layout: [l1, l2, x1, y1, x2, y2] for each matrix
+            // Use temporary arrays to extract values
+            float CV_DECL_ALIGNED(32) l1_arr[VTraits<v_float32>::max_nlanes];
+            float CV_DECL_ALIGNED(32) l2_arr[VTraits<v_float32>::max_nlanes];
+            float CV_DECL_ALIGNED(32) x1_arr[VTraits<v_float32>::max_nlanes];
+            float CV_DECL_ALIGNED(32) y1_arr[VTraits<v_float32>::max_nlanes];
+            float CV_DECL_ALIGNED(32) x2_arr[VTraits<v_float32>::max_nlanes];
+            float CV_DECL_ALIGNED(32) y2_arr[VTraits<v_float32>::max_nlanes];
+            
+            v_store_aligned(l1_arr, v_l1);
+            v_store_aligned(l2_arr, v_l2);
+            v_store_aligned(x1_arr, v_x1);
+            v_store_aligned(y1_arr, v_y1);
+            v_store_aligned(x2_arr, v_x2);
+            v_store_aligned(y2_arr, v_y2);
+            
+            for (int k = 0; k < vlanes; k++)
+            {
+                dst[6*(j+k)] = l1_arr[k];
+                dst[6*(j+k) + 1] = l2_arr[k];
+                dst[6*(j+k) + 2] = x1_arr[k];
+                dst[6*(j+k) + 3] = y1_arr[k];
+                dst[6*(j+k) + 4] = x2_arr[k];
+                dst[6*(j+k) + 5] = y2_arr[k];
+            }
+        }
+    }
+#endif // CV_SIMD
+
+    // Process remaining matrices with scalar code
+    for( ; j < n; j++ )
     {
         double a = cov[j*3];
         double b = cov[j*3+1];
