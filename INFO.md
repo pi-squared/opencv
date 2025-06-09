@@ -83,6 +83,32 @@
 
 ## Previous Optimizations:
 
+### Optimization 4: ContourArea SIMD Optimization (Fixed)
+**Branch**: `optimize-contourarea-simd`
+**File**: `modules/imgproc/src/shapedescr.cpp`
+**Date**: 2025-06-09
+**Status**: Fixed compilation errors and pushed to remote
+
+**Fixes Applied**:
+- Changed `vx_setzero<v_float64>()` to `vx_setzero_f64()`
+- Replaced `v_neg()` with `v_sub()` for negation
+- Removed `v_extract_low/high` and `v_low/high` functions (not available)
+- Simplified double precision accumulation using scalar operations
+- Fixed unused variable warnings
+
+**Implementation**:
+- SIMD optimization for contour area calculation using Green's theorem
+- Process multiple points in parallel (4-16 depending on SIMD width)
+- Separate paths for float and integer point contours
+- Uses v_float32 for computation with double precision accumulation
+- Cross product calculation: xi*yi+1 - xi+1*yi for area computation
+
+**Expected Performance Gains**:
+- 2-3x speedup for large contours (>100 points)
+- Float contours: Direct SIMD processing with v_load_deinterleave
+- Integer contours: Conversion overhead but still beneficial for large contours
+- Performance scales with SIMD width (SSE: 4, AVX2: 8, AVX-512: 16 points)
+
 ### Optimization 3: SIMD Optimization for calcHist_8u Function
 **Branch**: `optimize-calchist-simd`
 **File**: `modules/imgproc/src/histogram.cpp`

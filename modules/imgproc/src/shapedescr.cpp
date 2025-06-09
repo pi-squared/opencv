@@ -325,7 +325,6 @@ double cv::contourArea( InputArray _contour, bool oriented )
 #if CV_SIMD
     // Use SIMD for larger contours
     const int vlanes = VTraits<v_float32>::vlanes();
-    const int vlanes64 = VTraits<v_float64>::vlanes();
     
     if( npoints >= vlanes * 2 )
     {
@@ -333,11 +332,7 @@ double cv::contourArea( InputArray _contour, bool oriented )
         
         if( is_float )
         {
-            // Use double precision accumulators for numerical stability
-            v_float64 accum1 = vx_setzero<v_float64>();
-            v_float64 accum2 = vx_setzero<v_float64>();
-            v_float64 accum3 = vx_setzero<v_float64>();
-            v_float64 accum4 = vx_setzero<v_float64>();
+            // Use double precision accumulator for numerical stability
             
             // Process the main loop
             for( ; i < npoints - 1; i++ )
@@ -352,14 +347,19 @@ double cv::contourArea( InputArray _contour, bool oriented )
                     v_load_deinterleave(&ptsf[i+1].x, x_next, y_next);
                     
                     // Compute cross products: x_curr * y_next - x_next * y_curr
-                    v_float32 cross = v_fma(x_curr, y_next, -x_next * y_curr);
+                    v_float32 xy1 = v_mul(x_curr, y_next);
+                    v_float32 xy2 = v_mul(x_next, y_curr);
+                    v_float32 cross = v_sub(xy1, xy2);
                     
                     // Convert to double and accumulate
-                    v_float64 cross_low = v_cvt_f64(v_extract_low(cross));
-                    v_float64 cross_high = v_cvt_f64(v_extract_high(cross));
+                    // Store cross products temporarily
+                    alignas(32) float cross_buf[vlanes];
+                    v_store_aligned(cross_buf, cross);
                     
-                    accum1 = v_add(accum1, cross_low);
-                    accum2 = v_add(accum2, cross_high);
+                    // Accumulate in double precision
+                    for(int j = 0; j < vlanes; j++) {
+                        a00 += (double)cross_buf[j];
+                    }
                     
                     i += vlanes - 1;  // -1 because the loop will increment
                 }
@@ -372,16 +372,10 @@ double cv::contourArea( InputArray _contour, bool oriented )
             
             // Handle wrap-around (last point to first point)
             a00 += (double)ptsf[npoints-1].x * ptsf[0].y - (double)ptsf[0].x * ptsf[npoints-1].y;
-            
-            // Sum all accumulators
-            a00 += v_reduce_sum(accum1) + v_reduce_sum(accum2) + 
-                   v_reduce_sum(accum3) + v_reduce_sum(accum4);
         }
         else  // Integer points
         {
-            // Use double precision accumulators
-            v_float64 accum1 = vx_setzero<v_float64>();
-            v_float64 accum2 = vx_setzero<v_float64>();
+            // Use double precision accumulator
             
             // Process the main loop
             for( ; i < npoints - 1; )
@@ -407,14 +401,19 @@ double cv::contourArea( InputArray _contour, bool oriented )
                     v_float32 y_next_vec = vx_load_aligned(y_next);
                     
                     // Compute cross products
-                    v_float32 cross = v_fma(x_curr_vec, y_next_vec, -x_next_vec * y_curr_vec);
+                    v_float32 xy1 = v_mul(x_curr_vec, y_next_vec);
+                    v_float32 xy2 = v_mul(x_next_vec, y_curr_vec);
+                    v_float32 cross = v_sub(xy1, xy2);
                     
                     // Convert to double and accumulate
-                    v_float64 cross_low = v_cvt_f64(v_extract_low(cross));
-                    v_float64 cross_high = v_cvt_f64(v_extract_high(cross));
+                    // Store cross products temporarily
+                    alignas(32) float cross_buf[vlanes];
+                    v_store_aligned(cross_buf, cross);
                     
-                    accum1 = v_add(accum1, cross_low);
-                    accum2 = v_add(accum2, cross_high);
+                    // Accumulate in double precision
+                    for(int j = 0; j < vlanes; j++) {
+                        a00 += (double)cross_buf[j];
+                    }
                     
                     i += vlanes;
                 }
@@ -428,9 +427,6 @@ double cv::contourArea( InputArray _contour, bool oriented )
             
             // Handle wrap-around
             a00 += (double)ptsi[npoints-1].x * ptsi[0].y - (double)ptsi[0].x * ptsi[npoints-1].y;
-            
-            // Sum accumulators
-            a00 += v_reduce_sum(accum1) + v_reduce_sum(accum2);
         }
     }
     else
