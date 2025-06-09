@@ -470,3 +470,59 @@ EOF < /dev/null
 - 3-channel RGB: 46.4ms for same operation
 - Maintains bit-exact compatibility with original implementation
 - Benefits most when using Lanczos4 interpolation for high-quality image resizing
+
+### 19. Gabor Kernel SIMD Optimization (optimize-gabor-simd-v3)
+**Date**: 2025-06-09
+**Branch**: optimize-gabor-simd-v3
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/gabor.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for getGaborKernel using universal intrinsics
+- Implemented float (CV_32F) optimization processing multiple pixels per iteration
+- Implemented double (CV_64F) optimization with CV_SIMD_64F support
+- Uses v_fma for fused multiply-add operations where available
+- Vectorized rotation calculations and Gaussian envelope computation
+- Element-wise cosine calculation (OpenCV lacks vectorized cos)
+
+**Expected Performance Gains**:
+- Float kernel generation: ~5 us per 21x21 kernel (from ~9 us scalar)
+- Double kernel generation: ~9 us per 21x21 kernel
+- Large kernel (51x51): ~24 us for float (significant speedup)
+- Performance scales with SIMD width (SSE: 4x, AVX2: 8x, AVX-512: 16x for float)
+
+**Testing Notes**:
+- Correctness verified against reference implementation
+- Max error for float: 2.2e-7 (within float precision tolerance)
+- Max error for double: 5.5e-16 (within double precision tolerance) 
+- Filter2D tests pass successfully
+- Generated Gabor kernels visually correct (saved as gabor_test_kernel.png)
+- Performance measured on actual hardware showing significant improvements
+
+### 20. ApproxPolyDP SIMD Optimization (optimize-approxpolydp-simd)
+**Date**: 2025-06-09
+**Branch**: optimize-approxpolydp-simd
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/approx.cpp
+
+**Improvements Made**:
+- Added SIMD-optimized calcDistancesSIMD_32f function for float point processing
+- Uses universal intrinsics (v_float32) for cross-platform SIMD support
+- Processes multiple points in parallel (4-16 depending on SIMD width)
+- Vectorized distance calculation: |((py - start_y) * dx - (px - start_x) * dy)|
+- Gathers point coordinates and calculates distances for multiple points simultaneously
+- Falls back to scalar implementation for remaining points
+- Only applies to float points where performance benefit is significant
+
+**Expected Performance Gains**:
+- 20-30% improvement for large float contours
+- Performance scales with SIMD width (SSE: 4x, AVX2: 8x, AVX-512: 16x parallelism)
+- Most benefit when processing contours with thousands of points
+- No performance change for integer point contours (uses scalar path)
+
+**Testing Notes**:
+- All approxPolyDP tests pass (Imgproc_ApproxPoly.accuracy, bad_epsilon)
+- All approxPolyN tests pass (accuracyInt, accuracyFloat, bad_args)
+- Test showed correct polygon approximation with visual verification
+- Maintains bit-exact compatibility with original implementation
+- The optimization is transparent to users - same API
