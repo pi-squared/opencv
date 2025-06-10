@@ -1738,3 +1738,49 @@ EOF < /dev/null
 - Falls back to FFT-based method for large templates where DFT is more efficient
 - Benefits real-time template matching applications
 - Compatible with all channel counts (1-4 channels)
+## Branches Reviewed but Not Optimized
+### 54. HoughLines SIMD Optimization (optimize-houghlines-simd)
+**Date**: 2025-06-10
+**Branch**: optimize-houghlines-simd
+**Status**: Already optimized and pushed
+**File**: modules/imgproc/src/hough.cpp
+
+**Notes**: 
+- Branch already contains SIMD optimization for HoughLinesStandard
+- Uses universal intrinsics to process multiple angles at once
+- Optimization already committed by previous work
+
+### 55. Equalize Histogram AVX-512 (optimize-equalize-hist-avx512)
+**Date**: 2025-06-10
+**Branch**: optimize-equalize-hist-avx512
+**Status**: Already optimized but inefficient
+**File**: modules/imgproc/src/histogram.cpp
+
+**Issues Found**:
+- SIMD optimization exists but is inefficient
+- Loads pixels with SIMD, stores to temp array, then does scalar histogram updates
+- The extra memory operations likely make it slower than original code
+- Proper implementation would need multiple histograms to avoid conflicts
+
+### 56. Template Matching AVX-512 (optimize-templmatch-avx512)
+**Date**: 2025-06-10
+**Branch**: optimize-templmatch-avx512
+**Status**: Has compilation errors
+**File**: modules/imgproc/src/templmatch.cpp
+
+**Issues Found**:
+- Uses non-existent types like `v_float64x8` (should be `v_float64`)
+- Incorrect intrinsic function names (`v256_load`, `v_cvt_f64`)
+- Mixing AVX2 and AVX-512 concepts
+- The optimization would not compile with OpenCV's universal intrinsics
+- Needs complete rewrite using correct OpenCV universal intrinsics
+
+### 57. WarpAffine AVX-512 (optimize-warpaffine-avx512)
+**Date**: 2025-06-10
+**Branch**: optimize-warpaffine-avx512
+**Status**: No actual optimization
+**File**: Only INFO.md changes
+
+**Notes**: 
+- Branch contains only INFO.md changes
+- No actual code optimization present
