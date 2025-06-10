@@ -1598,3 +1598,71 @@ ENDTEXT < /dev/null
 - This branch needs bug fixes before it can be merged
 - The AVX-512 code should be rewritten to use 16-bit arithmetic like the universal intrinsics version
 - Consider removing the AVX-512 specific path if the universal intrinsics provide sufficient performance
+
+### 52. Adaptive Threshold Loop Unrolling Optimization (optimize-adaptive-threshold-simd)
+**Date**: 2025-06-10  
+**Branch**: optimize-adaptive-threshold-simd
+**Status**: Pushed to remote (reviewed and verified)
+**File**: modules/imgproc/src/thresh.cpp
+
+**Improvements Made**:
+- Added loop unrolling optimization for adaptiveThreshold function
+- Process 8 pixels at a time with unrolled table lookups
+- Improves instruction-level parallelism and reduces loop overhead
+- Better memory access patterns with sequential table lookups
+- Works with both ADAPTIVE_THRESH_MEAN_C and ADAPTIVE_THRESH_GAUSSIAN_C methods
+- Maintains bit-exact compatibility with original implementation
+
+**Expected Performance Gains**:
+- 10-15% improvement from reduced loop overhead
+- Better instruction pipelining with 8x unrolled lookups
+- Improved cache utilization for table access
+- Most benefit for larger images where loop overhead is significant
+
+**Implementation Details**:
+- Uses conditional compilation with CV_SIMD for compatibility
+- Simple loop unrolling without vector instructions (table lookups are inherently scalar)
+- Processes 8 pixels per iteration in the unrolled section
+- Falls back to scalar code for remaining pixels
+- The optimization applies after mean/gaussian filtering is complete
+
+**Testing Notes**:
+- Verified correctness with custom test program - all tests pass
+- The optimization maintains exact output as the original algorithm
+- Works with all block sizes and C values
+- Benefits image preprocessing, document scanning, and adaptive binarization
+- This is a safe optimization that improves performance through better CPU utilization
+EOF < /dev/null
+### 52. Adaptive Threshold Loop Unrolling Optimization (optimize-adaptive-threshold-simd)
+**Date**: 2025-06-10  
+**Branch**: optimize-adaptive-threshold-simd
+**Status**: Pushed to remote (reviewed and verified)
+**File**: modules/imgproc/src/thresh.cpp
+
+**Improvements Made**:
+- Added loop unrolling optimization for adaptiveThreshold function
+- Process 8 pixels at a time with unrolled table lookups
+- Improves instruction-level parallelism and reduces loop overhead
+- Better memory access patterns with sequential table lookups
+- Works with both ADAPTIVE_THRESH_MEAN_C and ADAPTIVE_THRESH_GAUSSIAN_C methods
+- Maintains bit-exact compatibility with original implementation
+
+**Expected Performance Gains**:
+- 10-15% improvement from reduced loop overhead
+- Better instruction pipelining with 8x unrolled lookups
+- Improved cache utilization for table access
+- Most benefit for larger images where loop overhead is significant
+
+**Implementation Details**:
+- Uses conditional compilation with CV_SIMD for compatibility
+- Simple loop unrolling without vector instructions (table lookups are inherently scalar)
+- Processes 8 pixels per iteration in the unrolled section
+- Falls back to scalar code for remaining pixels
+- The optimization applies after mean/gaussian filtering is complete
+
+**Testing Notes**:
+- Verified correctness with custom test program - all tests pass
+- The optimization maintains exact output as the original algorithm
+- Works with all block sizes and C values
+- Benefits image preprocessing, document scanning, and adaptive binarization
+- This is a safe optimization that improves performance through better CPU utilization
