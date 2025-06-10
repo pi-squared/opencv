@@ -1988,22 +1988,22 @@ void cv::adaptiveThreshold( InputArray _src, OutputArray _dst, double maxValue,
             v_expand(v_src, v_src_0, v_src_1);
             v_expand(v_mean, v_mean_0, v_mean_1);
             
-            v_int16 v_diff_0 = v_reinterpret_as_s16(v_src_0) - v_reinterpret_as_s16(v_mean_0);
-            v_int16 v_diff_1 = v_reinterpret_as_s16(v_src_1) - v_reinterpret_as_s16(v_mean_1);
+            v_int16 v_diff_0 = v_sub(v_reinterpret_as_s16(v_src_0), v_reinterpret_as_s16(v_mean_0));
+            v_int16 v_diff_1 = v_sub(v_reinterpret_as_s16(v_src_1), v_reinterpret_as_s16(v_mean_1));
             
             // Compare with -idelta
             v_uint8 v_result;
             if( type == cv::THRESH_BINARY )
             {
-                v_uint16 v_cmp_0 = v_reinterpret_as_u16(v_diff_0 > v_idelta);
-                v_uint16 v_cmp_1 = v_reinterpret_as_u16(v_diff_1 > v_idelta);
-                v_result = v_pack(v_cmp_0, v_cmp_1) & v_imaxval;
+                v_uint16 v_cmp_0 = v_reinterpret_as_u16(v_gt(v_diff_0, v_idelta));
+                v_uint16 v_cmp_1 = v_reinterpret_as_u16(v_gt(v_diff_1, v_idelta));
+                v_result = v_and(v_pack(v_cmp_0, v_cmp_1), v_imaxval);
             }
             else // THRESH_BINARY_INV
             {
-                v_uint16 v_cmp_0 = v_reinterpret_as_u16(v_diff_0 <= v_idelta);
-                v_uint16 v_cmp_1 = v_reinterpret_as_u16(v_diff_1 <= v_idelta);
-                v_result = v_pack(v_cmp_0, v_cmp_1) & v_imaxval;
+                v_uint16 v_cmp_0 = v_reinterpret_as_u16(v_le(v_diff_0, v_idelta));
+                v_uint16 v_cmp_1 = v_reinterpret_as_u16(v_le(v_diff_1, v_idelta));
+                v_result = v_and(v_pack(v_cmp_0, v_cmp_1), v_imaxval);
             }
             
             v_store(ddata + j, v_result);
