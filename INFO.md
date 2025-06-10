@@ -1452,3 +1452,149 @@ EOF < /dev/null
 - Works with all block sizes and C values
 - Benefits image preprocessing, document scanning, and adaptive binarization
 - This is a safe optimization that improves performance through better CPU utilization
+
+### 50. MinEnclosingCircle SIMD Optimization (optimize-minenclosingcircle-simd)
+**Date**: 2025-06-10
+**Branch**: optimize-minenclosingcircle-simd
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/shapedescr.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for minEnclosingCircle distance checking loop
+- Process multiple points in parallel using v_float32 SIMD vectors
+- Calculate squared distances for 4-16 points simultaneously (SSE: 4, AVX2: 8, AVX-512: 16)
+- Use v_check_any to quickly determine if any point is outside current circle
+- Falls back to scalar processing when circle needs to be updated
+- Maintains Welzl's algorithm structure for correctness
+
+**Expected Performance Gains**:
+- Distance checking phase: 2-3x speedup with SIMD processing
+- Most benefit for large point sets (100+ points)
+- Performance scales with SIMD width and point count
+- Reduces computational complexity of the inner loop
+- Better cache utilization with batch processing
+
+**Implementation Details**:
+- Uses OpenCV's universal intrinsics for cross-platform SIMD support
+- Loads point coordinates into temporary arrays for SIMD processing
+- Calculates squared distances to avoid expensive sqrt operations
+- Updates SIMD variables (center, radius) when circle changes
+- Falls back to original scalar implementation for small point sets
+
+**Testing Notes**:
+- The optimization maintains bit-exact compatibility with original algorithm
+- Works with both integer and float point types
+- Benefits applications like shape analysis, object detection, and bounding calculations
+- Most effective when finding minimum enclosing circles for large contours
+
+
+### 51. Adaptive Threshold AVX-512 v2 Optimization (optimize-adaptive-threshold-avx512-v2)
+**Date**: 2025-06-10
+**Branch**: optimize-adaptive-threshold-avx512-v2
+**Status**: NOT WORKING - Has correctness issues
+**Files**: 
+- modules/imgproc/src/thresh.cpp (modified)
+- modules/imgproc/src/adaptive_threshold.simd.hpp (new)
+
+**Improvements Made**:
+- Added universal intrinsics SIMD implementation with 4x loop unrolling
+- Added AVX-512 specific optimization for processing 64 pixels at once
+- Replaced table lookup approach with direct SIMD comparisons
+- Uses 16-bit arithmetic to handle the full range of differences
+
+**Issues Found**:
+- AVX-512 implementation has arithmetic errors with signed 8-bit operations
+- The AVX-512 code incorrectly uses `_mm512_add_epi8(diff, _mm512_set1_epi8(-1))` which adds -1 instead of 255
+- Signed 8-bit arithmetic can't handle the required range [0, 510] for src - mean + 255
+- Needs conversion to 16-bit arithmetic for correct results
+
+**Expected Performance Gains**:
+- Theoretical: 4.8x to 6.3x speedup with AVX-512
+- SIMD implementation should provide 2-3x speedup
+- Performance scales with SIMD width (SSE: 16, AVX2: 32, AVX-512: 64 pixels)
+
+**Testing Notes**:
+- Created benchmark showing AVX-512 produces incorrect results
+- The universal intrinsics implementation correctly uses 16-bit arithmetic
+- AVX-512 specific code needs rewriting to use 16-bit operations
+- Benchmark showed speedup but failed correctness tests
+
+**Recommendation**: 
+- This branch needs bug fixes before it can be merged
+- The AVX-512 code should be rewritten to use 16-bit arithmetic like the universal intrinsics version
+- Consider removing the AVX-512 specific path if the universal intrinsics provide sufficient performance
+EOF < /dev/null
+
+### 51. Adaptive Threshold AVX-512 v2 Optimization (optimize-adaptive-threshold-avx512-v2)
+**Date**: 2025-06-10
+**Branch**: optimize-adaptive-threshold-avx512-v2
+**Status**: NOT WORKING - Has correctness issues
+**Files**: 
+- modules/imgproc/src/thresh.cpp (modified)
+- modules/imgproc/src/adaptive_threshold.simd.hpp (new)
+
+**Improvements Made**:
+- Added universal intrinsics SIMD implementation with 4x loop unrolling
+- Added AVX-512 specific optimization for processing 64 pixels at once
+- Replaced table lookup approach with direct SIMD comparisons
+- Uses 16-bit arithmetic to handle the full range of differences
+
+**Issues Found**:
+- AVX-512 implementation has arithmetic errors with signed 8-bit operations
+- The AVX-512 code incorrectly uses _mm512_add_epi8(diff, _mm512_set1_epi8(-1)) which adds -1 instead of 255
+- Signed 8-bit arithmetic cannot handle the required range [0, 510] for src - mean + 255
+- Needs conversion to 16-bit arithmetic for correct results
+
+**Expected Performance Gains**:
+- Theoretical: 4.8x to 6.3x speedup with AVX-512
+- SIMD implementation should provide 2-3x speedup
+- Performance scales with SIMD width (SSE: 16, AVX2: 32, AVX-512: 64 pixels)
+
+**Testing Notes**:
+- Created benchmark showing AVX-512 produces incorrect results
+- The universal intrinsics implementation correctly uses 16-bit arithmetic
+- AVX-512 specific code needs rewriting to use 16-bit operations
+- Benchmark showed speedup but failed correctness tests
+
+**Recommendation**: 
+- This branch needs bug fixes before it can be merged
+- The AVX-512 code should be rewritten to use 16-bit arithmetic like the universal intrinsics version
+- Consider removing the AVX-512 specific path if the universal intrinsics provide sufficient performance
+ENDTEXT < /dev/null
+
+
+### 51. Adaptive Threshold AVX-512 v2 Optimization (optimize-adaptive-threshold-avx512-v2)
+**Date**: 2025-06-10
+**Branch**: optimize-adaptive-threshold-avx512-v2
+**Status**: NOT WORKING - Has correctness issues
+**Files**: 
+- modules/imgproc/src/thresh.cpp (modified)
+- modules/imgproc/src/adaptive_threshold.simd.hpp (new)
+
+**Improvements Made**:
+- Added universal intrinsics SIMD implementation with 4x loop unrolling
+- Added AVX-512 specific optimization for processing 64 pixels at once
+- Replaced table lookup approach with direct SIMD comparisons
+- Uses 16-bit arithmetic to handle the full range of differences
+
+**Issues Found**:
+- AVX-512 implementation has arithmetic errors with signed 8-bit operations
+- The AVX-512 code incorrectly uses _mm512_add_epi8(diff, _mm512_set1_epi8(-1)) which adds -1 instead of 255
+- Signed 8-bit arithmetic cannot handle the required range [0, 510] for src - mean + 255
+- Needs conversion to 16-bit arithmetic for correct results
+
+**Expected Performance Gains**:
+- Theoretical: 4.8x to 6.3x speedup with AVX-512
+- SIMD implementation should provide 2-3x speedup
+- Performance scales with SIMD width (SSE: 16, AVX2: 32, AVX-512: 64 pixels)
+
+**Testing Notes**:
+- Created benchmark showing AVX-512 produces incorrect results
+- The universal intrinsics implementation correctly uses 16-bit arithmetic
+- AVX-512 specific code needs rewriting to use 16-bit operations
+- Benchmark showed speedup but failed correctness tests
+
+**Recommendation**: 
+- This branch needs bug fixes before it can be merged
+- The AVX-512 code should be rewritten to use 16-bit arithmetic like the universal intrinsics version
+- Consider removing the AVX-512 specific path if the universal intrinsics provide sufficient performance
