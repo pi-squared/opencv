@@ -41,6 +41,7 @@
 //M*/
 
 #include "precomp.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 namespace cv
 {
@@ -164,12 +165,45 @@ void getRectSubPix_Cn_(const _Tp* src, size_t src_step, Size src_size,
 
         for( i = 0; i < win_size.height; i++, src += src_step, dst += dst_step )
         {
-            for( j = 0; j <= win_size.width - 2; j += 2 )
+#if CV_SIMD
+            // SIMD optimization for single channel float processing
+            if (cn == 1 && std::is_same<_Tp, float>::value && std::is_same<_DTp, float>::value)
             {
-                _WTp s0 = src[j]*a11 + src[j+cn]*a12 + src[j+src_step]*a21 + src[j+src_step+cn]*a22;
-                _WTp s1 = src[j+1]*a11 + src[j+cn+1]*a12 + src[j+src_step+1]*a21 + src[j+src_step+cn+1]*a22;
-                dst[j] = cast_op(s0);
-                dst[j+1] = cast_op(s1);
+                v_float32 v_a11 = vx_setall_f32((float)a11);
+                v_float32 v_a12 = vx_setall_f32((float)a12);
+                v_float32 v_a21 = vx_setall_f32((float)a21);
+                v_float32 v_a22 = vx_setall_f32((float)a22);
+                
+                const float* src_f = (const float*)src;
+                const float* src_next = src_f + src_step;
+                float* dst_f = (float*)dst;
+                
+                j = 0;
+                for( ; j <= win_size.width - VTraits<v_float32>::vlanes(); j += VTraits<v_float32>::vlanes() )
+                {
+                    v_float32 s00 = vx_load(src_f + j);
+                    v_float32 s01 = vx_load(src_f + j + 1);
+                    v_float32 s10 = vx_load(src_next + j);
+                    v_float32 s11 = vx_load(src_next + j + 1);
+                    
+                    v_float32 result = v_fma(s00, v_a11, v_mul(s01, v_a12));
+                    result = v_fma(s10, v_a21, result);
+                    result = v_fma(s11, v_a22, result);
+                    
+                    v_store(dst_f + j, result);
+                }
+            }
+            else
+#endif
+            {
+                j = 0;
+                for( ; j <= win_size.width - 2; j += 2 )
+                {
+                    _WTp s0 = src[j]*a11 + src[j+cn]*a12 + src[j+src_step]*a21 + src[j+src_step+cn]*a22;
+                    _WTp s1 = src[j+1]*a11 + src[j+cn+1]*a12 + src[j+src_step+1]*a21 + src[j+src_step+cn+1]*a22;
+                    dst[j] = cast_op(s0);
+                    dst[j+1] = cast_op(s1);
+                }
             }
 
             for( ; j < win_size.width; j++ )
@@ -251,6 +285,8 @@ static void getRectSubPix_8u32f
 
         for( ; win_size.height--; src += src_step, dst += dst_step )
         {
+            // Due to sequential dependency (each output depends on prev), 
+            // SIMD optimization is not beneficial for this algorithm
             float prev = (1 - a)*(b1*src[0] + b2*src[src_step]);
             for( int j = 0; j < win_size.width; j++ )
             {
