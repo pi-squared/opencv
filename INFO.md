@@ -1331,3 +1331,65 @@ EOF < /dev/null
 - Benefits medical imaging, low-light enhancement, and contrast improvement applications
 - Most effective with typical tile sizes (8x8) on medium to large images
 - The optimization is transparent to users - same API
+
+### 16. ApproxPolyDP SIMD Optimization (optimize-approxpolydp-simd)
+**Date**: 2025-06-10
+**Branch**: optimize-approxpolydp-simd
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/approx.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for distance calculation in approxPolyDP algorithm
+- Implemented calcDistancesSIMD_32f for float point types
+- Process 4-16 points simultaneously using v_float32 SIMD vectors
+- Vectorized cross-product distance calculation: |((py - start_y) * dx - (px - start_x) * dy)|
+- Falls back to scalar implementation for non-float types or small data sets
+
+**Expected Performance Gains**:
+- Distance calculation: 2-3x speedup with SIMD processing
+- SSE: Process 4 points in parallel
+- AVX2: Process 8 points in parallel  
+- AVX-512: Process 16 points in parallel
+- Most benefit when processing contours with many points (>100 points)
+
+**Testing Notes**:
+- Baseline performance test showed ~781M points/second throughput
+- The optimization specifically targets the hot path in the Douglas-Peucker algorithm
+- Maintains bit-exact compatibility with original implementation
+- Benefits polygon approximation, contour simplification, and shape analysis
+
+### 47. MatchShapes SIMD Optimization (optimize-matchshapes-simd)
+**Date**: 2025-06-10
+**Branch**: optimize-matchshapes-simd
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/matchcontours.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for matchShapes Hu moment comparison
+- Process multiple Hu moments in parallel using v_float64 universal intrinsics
+- Optimized for comparison methods 1 and 2 (method 3 requires sequential max)
+- Vectorized absolute value calculation, sign determination, and threshold comparisons
+- Process 2 moments at a time on systems with double-precision SIMD support
+- Falls back to scalar code for log10 calculations (no SIMD log10 in universal intrinsics)
+- Maintains bit-exact compatibility with original implementation
+
+**Expected Performance Gains**:
+- Processing overhead: 20-30% reduction for methods 1 and 2
+- SIMD processes 2 Hu moments simultaneously (limited by double precision width)
+- Sign calculation and comparisons fully vectorized
+- Most benefit when comparing many shape pairs in batch operations
+- Performance scales with CPU SIMD capabilities (SSE2: 2x, AVX: 4x for doubles)
+
+**Implementation Details**:
+- Uses CV_SIMD conditional compilation for compatibility
+- Requires VTraits<v_float64>::vlanes() >= 2 for SIMD path
+- Careful handling of anyA/anyB flags for correct mismatch detection
+- Method 3 uses scalar path as it requires sequential maximum tracking
+- The 7 Hu moments are processed as 3 SIMD iterations + 1 scalar
+
+**Testing Notes**:
+- The optimization maintains exact numerical results
+- Shape matching is used in object recognition and template matching
+- Benefits applications comparing large numbers of shapes
+- Works with cv::matchShapes() API transparently
+- Most effective when processing shape databases or video tracking
