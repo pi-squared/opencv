@@ -55,6 +55,132 @@ double cv::matchShapes(InputArray contour1, InputArray contour2, int method, dou
     HuMoments( moments(contour1), ma );
     HuMoments( moments(contour2), mb );
 
+#if CV_SIMD
+    // SIMD optimization for processing multiple Hu moments at once
+    // Since we have 7 moments, we'll process them in parallel where possible
+    if (method == 1 || method == 2)
+    {
+        v_float64 v_eps = vx_setall<double>(eps);
+        v_float64 v_zero = vx_setzero<v_float64>();
+        v_float64 v_one = vx_setall<double>(1.0);
+        v_float64 v_neg_one = vx_setall<double>(-1.0);
+        
+        // Process moments with SIMD
+        if (VTraits<v_float64>::vlanes() >= 2)
+        {
+            for (i = 0; i <= 4; i += 2)
+            {
+                if (i + 1 >= 7) break;
+                
+                // Load 2 pairs of moments
+                v_float64 va = v_load(ma + i);
+                v_float64 vb = v_load(mb + i);
+                
+                // Calculate absolute values
+                v_float64 v_ama = v_abs(va);
+                v_float64 v_amb = v_abs(vb);
+                
+                // Check if any values are > 0
+                v_float64 mask_a = v_gt(v_ama, v_zero);
+                v_float64 mask_b = v_gt(v_amb, v_zero);
+                
+                if (v_check_any(mask_a))
+                    anyA = true;
+                if (v_check_any(mask_b))
+                    anyB = true;
+                
+                // Calculate signs
+                v_float64 v_sma = v_select(v_gt(va, v_zero), v_one, 
+                                         v_select(v_lt(va, v_zero), v_neg_one, v_zero));
+                v_float64 v_smb = v_select(v_gt(vb, v_zero), v_one,
+                                         v_select(v_lt(vb, v_zero), v_neg_one, v_zero));
+                
+                // Check if both ama and amb > eps
+                v_float64 mask = v_and(v_gt(v_ama, v_eps), v_gt(v_amb, v_eps));
+                
+                if (v_check_any(mask))
+                {
+                    // Need to process elements individually due to log10
+                    double ta[2], tb[2];
+                    v_store(ta, v_ama);
+                    v_store(tb, v_amb);
+                    
+                    double tsma[2], tsmb[2];
+                    v_store(tsma, v_sma);
+                    v_store(tsmb, v_smb);
+                    
+                    for (int j = 0; j < 2 && i + j < 7; j++)
+                    {
+                        if (ta[j] > eps && tb[j] > eps)
+                        {
+                            if (method == 1)
+                            {
+                                double ama = 1. / (tsma[j] * log10(ta[j]));
+                                double amb = 1. / (tsmb[j] * log10(tb[j]));
+                                result += fabs(-ama + amb);
+                            }
+                            else // method == 2
+                            {
+                                double ama = tsma[j] * log10(ta[j]);
+                                double amb = tsmb[j] * log10(tb[j]);
+                                result += fabs(-ama + amb);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Process remaining moments
+            for (; i < 7; i++)
+            {
+                double ama = fabs(ma[i]);
+                double amb = fabs(mb[i]);
+                
+                if (ama > 0)
+                    anyA = true;
+                if (amb > 0)
+                    anyB = true;
+                
+                if (ma[i] > 0)
+                    sma = 1;
+                else if (ma[i] < 0)
+                    sma = -1;
+                else
+                    sma = 0;
+                if (mb[i] > 0)
+                    smb = 1;
+                else if (mb[i] < 0)
+                    smb = -1;
+                else
+                    smb = 0;
+                
+                if (ama > eps && amb > eps)
+                {
+                    if (method == 1)
+                    {
+                        ama = 1. / (sma * log10(ama));
+                        amb = 1. / (smb * log10(amb));
+                        result += fabs(-ama + amb);
+                    }
+                    else // method == 2
+                    {
+                        ama = sma * log10(ama);
+                        amb = smb * log10(amb);
+                        result += fabs(-ama + amb);
+                    }
+                }
+            }
+        }
+        else
+        {
+            // Fall back to scalar implementation
+            goto scalar_impl;
+        }
+    }
+    else
+    {
+scalar_impl:
+#endif // CV_SIMD
     switch (method)
     {
     case 1:
@@ -160,6 +286,9 @@ double cv::matchShapes(InputArray contour1, InputArray contour2, int method, dou
     default:
         CV_Error( cv::Error::StsBadArg, "Unknown comparison method" );
     }
+#if CV_SIMD
+    }
+#endif
 
     //If anyA and anyB are both true, the result is correct.
     //If anyA and anyB are both false, the distance is 0, perfect match.
