@@ -167,23 +167,106 @@ static void findMinEnclosingCircle(const PT *pts, int count, Point2f &center, fl
     float dy = (float)(pts[0].y - pts[1].y);
     radius = (float)norm(Point2f(dx, dy)) / 2.0f + EPS;
 
-    for (int i = 2; i < count; ++i)
+#ifdef CV_SIMD
+    // SIMD optimization for checking multiple points at once
+    if (count >= 2 + VTraits<v_float32>::vlanes())
     {
-        dx = (float)pts[i].x - center.x;
-        dy = (float)pts[i].y - center.y;
-        float d = (float)norm(Point2f(dx, dy));
-        if (d < radius)
+        v_float32 v_cx = vx_setall_f32(center.x);
+        v_float32 v_cy = vx_setall_f32(center.y);
+        v_float32 v_radius_sq = vx_setall_f32(radius * radius);
+        
+        int i = 2;
+        for (; i <= count - VTraits<v_float32>::vlanes(); i += VTraits<v_float32>::vlanes())
         {
-            continue;
-        }
-        else
-        {
-            Point2f new_center; float new_radius = 0;
-            findSecondPoint(pts, i, new_center, new_radius);
-            if (new_radius > 0)
+            // Load point coordinates
+            float temp_x[VTraits<v_float32>::max_nlanes];
+            float temp_y[VTraits<v_float32>::max_nlanes];
+            
+            for (int j = 0; j < VTraits<v_float32>::vlanes(); j++)
             {
-                radius = new_radius;
-                center = new_center;
+                temp_x[j] = (float)pts[i + j].x;
+                temp_y[j] = (float)pts[i + j].y;
+            }
+            
+            v_float32 v_px = vx_load(temp_x);
+            v_float32 v_py = vx_load(temp_y);
+            
+            // Calculate squared distances
+            v_float32 v_dx = v_sub(v_px, v_cx);
+            v_float32 v_dy = v_sub(v_py, v_cy);
+            v_float32 v_dist_sq = v_add(v_mul(v_dx, v_dx), v_mul(v_dy, v_dy));
+            
+            // Check if any point is outside the current circle
+            v_float32 v_mask = v_gt(v_dist_sq, v_radius_sq);
+            
+            if (v_check_any(v_mask))
+            {
+                // Fall back to scalar processing for this batch
+                for (int j = 0; j < VTraits<v_float32>::vlanes(); j++)
+                {
+                    float px = (float)pts[i + j].x;
+                    float py = (float)pts[i + j].y;
+                    float dx = px - center.x;
+                    float dy = py - center.y;
+                    float d = (float)norm(Point2f(dx, dy));
+                    if (d >= radius)
+                    {
+                        Point2f new_center; float new_radius = 0;
+                        findSecondPoint(pts, i + j, new_center, new_radius);
+                        if (new_radius > 0)
+                        {
+                            radius = new_radius;
+                            center = new_center;
+                            // Update SIMD variables with new center
+                            v_cx = vx_setall_f32(center.x);
+                            v_cy = vx_setall_f32(center.y);
+                            v_radius_sq = vx_setall_f32(radius * radius);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Process remaining points
+        for (; i < count; ++i)
+        {
+            dx = (float)pts[i].x - center.x;
+            dy = (float)pts[i].y - center.y;
+            float d = (float)norm(Point2f(dx, dy));
+            if (d >= radius)
+            {
+                Point2f new_center; float new_radius = 0;
+                findSecondPoint(pts, i, new_center, new_radius);
+                if (new_radius > 0)
+                {
+                    radius = new_radius;
+                    center = new_center;
+                }
+            }
+        }
+    }
+    else
+#endif
+    {
+        // Original scalar implementation
+        for (int i = 2; i < count; ++i)
+        {
+            dx = (float)pts[i].x - center.x;
+            dy = (float)pts[i].y - center.y;
+            float d = (float)norm(Point2f(dx, dy));
+            if (d < radius)
+            {
+                continue;
+            }
+            else
+            {
+                Point2f new_center; float new_radius = 0;
+                findSecondPoint(pts, i, new_center, new_radius);
+                if (new_radius > 0)
+                {
+                    radius = new_radius;
+                    center = new_center;
+                }
             }
         }
     }
