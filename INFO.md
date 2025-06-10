@@ -75,3 +75,18 @@
 - Tests can be run with: `./bin/opencv_test_imgproc --gtest_filter="*StackBlur*"`
 - Set OPENCV_TEST_DATA_PATH environment variable for test data location
 - For AVX-512 builds: `-DCPU_BASELINE=AVX2 -DCPU_DISPATCH=AVX512_SKX`
+
+## Branches with Issues
+
+### optimize-templmatch-avx512
+**Date**: 2025-06-10
+**Status**: NOT WORKING - Compilation errors
+**File**: modules/imgproc/src/templmatch.cpp
+
+**Issues Found**:
+- Uses non-existent types like `v_float64x8` (should be `v_float64`)
+- Incorrect intrinsic function names (`v256_load`, `v_cvt_f64`)
+- Mixing AVX2 and AVX-512 concepts
+- The optimization would not compile with OpenCV's universal intrinsics
+
+**Recommendation**: Needs complete rewrite using correct OpenCV universal intrinsics
