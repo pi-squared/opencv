@@ -1784,3 +1784,41 @@ EOF < /dev/null
 **Notes**: 
 - Branch contains only INFO.md changes
 - No actual code optimization present
+
+### 58. Moments SIMD Optimization (optimize-moments-simd)
+**Date**: 2025-06-10
+**Branch**: optimize-moments-simd
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/moments.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for float type moments calculation using CV_SIMD128 universal intrinsics
+- Process 4 floats at a time using v_float32x4 vectors (platform-independent)
+- Implemented 4x loop unrolling for better instruction-level parallelism
+- Process 16 floats per main iteration (4 vectors × 4 floats)
+- Maintains double precision accumulation to avoid precision loss
+- Added loop unrolling for scalar processing of remaining pixels
+
+**Notes**:
+- This complements the AVX-512 specific optimization in optimize-moments-float-avx512
+- Uses universal intrinsics for broader compatibility across platforms
+
+### 59. Template Matching SIMD Optimization (optimize-template-matching-simd)
+**Date**: 2025-06-10
+**Branch**: optimize-template-matching-simd
+**Status**: Pushed to remote
+**Files**: 
+- modules/imgproc/src/templmatch.cpp (modified)
+- modules/imgproc/src/templmatch.simd.hpp (new)
+
+**Improvements Made**:
+- Added SIMD-optimized direct correlation methods for small templates (<50x50)
+- Implemented optimized functions for all template matching methods
+- Uses OpenCV universal intrinsics for cross-platform SIMD support
+- Automatic selection between SIMD direct method and FFT-based method
+- Process 4-16 pixels per iteration depending on SIMD width
+
+**Notes**:
+- Avoids FFT overhead for small templates where direct method is faster
+- Performance scales with SIMD width (SSE: 4, AVX2: 8, AVX-512: 16)
+
