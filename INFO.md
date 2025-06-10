@@ -170,6 +170,32 @@
 - Benefits most when processing high-resolution images with many edge pixels
 - Automatic CPU detection via OpenCV's dispatch system
 
+### 8. HoughLinesStandard SIMD Optimization (optimize-houghlines-simd)
+**Date**: 2025-06-07
+**Branch**: optimize-houghlines-simd
+**Status**: Reviewed and ready to push
+**File**: modules/imgproc/src/hough.cpp
+
+**Improvements Made**:
+- Added SIMD-optimized accumulator update for non-edge-value mode
+- Vectorized trigonometric calculations using v_float32 intrinsics
+- Process multiple angles in parallel using SIMD lanes (4-16 depending on architecture)
+- Implemented cache-friendly angle batching (64 angles per batch) for better performance
+- Unrolled accumulator updates for reduced loop overhead
+- Added proper vx_cleanup() for SIMD state management
+
+**Expected Performance Gains**:
+- ~1.5-2x speedup for accumulator update phase
+- Better cache utilization with angle batching
+- Reduced memory bandwidth pressure
+- Scales with SIMD width (SSE: 4-wide, AVX2: 8-wide, AVX-512: 16-wide)
+
+**Testing Notes**:
+- The optimization targets the core computational loop that calculates r = x*cos(theta) + y*sin(theta) for all angles
+- This is different from the earlier Hough optimization which focused on other parts of the algorithm
+- Maintains exact numerical compatibility with scalar version
+- Falls back to scalar implementation when CV_SIMD is not available
+
 ### 10. Good Features to Track SIMD Optimization (optimize-goodfeatures-simd)
 **Date**: 2025-06-07
 **Branch**: optimize-goodfeatures-simd
