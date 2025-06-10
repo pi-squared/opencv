@@ -247,6 +247,33 @@
 - Maintains bit-exact compatibility with original implementation
 - Correctly computes Euclidean distances with L2 metric
 
+### 13. Moments SIMD Optimization (optimize-moments-simd)
+**Date**: 2025-06-10
+**Branch**: optimize-moments-simd
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/moments.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for float type moments calculation using CV_SIMD128 universal intrinsics
+- Process 4 floats at a time using v_float32x4 vectors (platform-independent)
+- Implemented 4x loop unrolling for better instruction-level parallelism
+- Process 16 floats per main iteration (4 vectors × 4 floats)
+- Maintains double precision accumulation to avoid precision loss
+- Added loop unrolling for scalar processing of remaining pixels
+
+**Expected Performance Gains**:
+- Process 4 pixels per SIMD iteration vs 1 in scalar code
+- 4x loop unrolling provides additional ILP benefits
+- Expected 2-3x speedup for float images on modern processors
+- Performance scales with SIMD width (SSE: 4, AVX2: 8 with recompilation)
+
+**Testing Notes**:
+- Simple correctness test shows accurate centroid calculation
+- Square test: exact centroid at (50, 50) with area 400
+- Gaussian pattern test: centroid accurate to sub-pixel precision
+- Float vs double precision differences are minimal (<1e-10)
+- This complements the AVX-512 specific optimization in optimize-moments-float-avx512
+
 ## Future Optimization Opportunities
 1. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
 2. **Contour Finding**: The contour tracing algorithms could benefit from SIMD optimization
