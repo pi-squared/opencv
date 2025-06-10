@@ -822,7 +822,7 @@ struct RemapVec_16u
                                        v_mul(v_src3, v_w3))));
                     
                     v_int32x4 v_dst_i = v_round(v_dst);
-                    v_pack_u_store(D + i*4, v_pack_u(v_dst_i, v_dst_i));
+                    v_pack_u_store(D + i*4, v_dst_i);
                 }
             }
         }
