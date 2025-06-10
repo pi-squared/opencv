@@ -1393,3 +1393,29 @@ EOF < /dev/null
 - Benefits applications comparing large numbers of shapes
 - Works with cv::matchShapes() API transparently
 - Most effective when processing shape databases or video tracking
+
+### 48. CalcHist AVX-512 Optimization (optimize-histogram-avx512)
+**Date**: 2025-06-10
+**Branch**: optimize-histogram-avx512
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/histogram.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for 1D histogram calculation in calcHist_8u
+- Use 4 parallel histograms to reduce data dependencies
+- Process up to 64 bytes at a time for better instruction-level parallelism
+- Add AVX-512 prefetching for improved cache utilization
+- SIMD-accelerated histogram merging using v_int32 operations
+- Maintains bit-exact compatibility with original implementation
+
+**Expected Performance Gains**:
+- ~8-10% speedup for histogram calculation on smaller images (VGA, HD)
+- Better cache utilization and reduced memory stalls
+- Scales with SIMD width (SSE: 16 bytes, AVX2: 32 bytes, AVX-512: 64 bytes)
+- Most benefit when processing continuous data (d0 == 1 case)
+
+**Testing Notes**:
+- Simple benchmark showed 8-10% improvement on VGA and Full HD images
+- Correctness verified with various patterns (all zeros, all 255s, gradient)
+- The optimization applies to single-channel 8-bit images
+- Falls back to original implementation for non-continuous data
