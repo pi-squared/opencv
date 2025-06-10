@@ -91,12 +91,43 @@
 - AVX-512 specific optimizations require runtime CPU detection (already handled by OpenCV's dispatch system)
 - Bilateral grid has overhead that makes it slower for small kernels
 
+### 4. Template Matching SIMD Optimization (optimize-template-matching-simd)
+**Date**: 2025-06-10
+**Branch**: optimize-template-matching-simd
+**Status**: Pushed to remote
+**Files**: 
+- modules/imgproc/src/templmatch.cpp (modified)
+- modules/imgproc/src/templmatch.simd.hpp (new)
+
+**Improvements Made**:
+- Added SIMD-optimized direct correlation methods for small templates (<50x50)
+- Implemented optimized functions for all template matching methods:
+  - TM_SQDIFF: Vectorized squared difference calculation
+  - TM_CCORR: Vectorized cross-correlation
+  - TM_CCOEFF: Vectorized correlation coefficient with mean removal
+  - Normalized versions with SIMD variance/norm calculations
+- Uses OpenCV universal intrinsics for cross-platform SIMD support
+- Automatic selection between SIMD direct method and FFT-based method
+- Process 4-16 pixels per iteration depending on SIMD width
+
+**Expected Performance Gains**:
+- Small templates (<50x50): 2-3x speedup with direct SIMD method
+- Avoids FFT overhead for small templates
+- Better cache utilization with direct access patterns
+- Performance scales with SIMD width (SSE: 4, AVX2: 8, AVX-512: 16)
+
+**Testing Notes**:
+- Correctness verified for all 6 template matching methods
+- Exact match location found at expected position (200, 150)
+- Performance improves significantly for templates up to 50x50
+- Larger templates still use FFT-based method for efficiency
+- The optimization is transparent to users - same API
+
 ## Future Optimization Opportunities
 1. **Median Blur AVX-512**: The median blur implementation could benefit from AVX-512 histogram operations
 2. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
-3. **Template Matching**: The correlation operations in templmatch.cpp could use AVX-512 FMA instructions
-4. **Adaptive Threshold Mean Calculation**: The boxFilter/GaussianBlur phase could also benefit from further optimization
-5. **Histogram-based operations**: Apply similar SIMD optimizations to equalizeHist and other histogram-based functions
+3. **Adaptive Threshold Mean Calculation**: The boxFilter/GaussianBlur phase could also benefit from further optimization
+4. **Histogram-based operations**: Apply similar SIMD optimizations to equalizeHist and other histogram-based functions
 
 ## Build Notes
 - Use `make -j$(nproc) opencv_imgproc` to build just the imgproc module
