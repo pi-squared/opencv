@@ -1404,3 +1404,36 @@ This file tracks the optimization branches that have been worked on and their st
 - Loop unrolling reduces loop overhead and improves instruction pipelining
 - No algorithmic changes - maintains exact CLAHE behavior
 - Ready for production use
+
+### 79. GEMM AVX-512 Optimization (optimize-gemm-avx512)
+**Date**: 2025-06-11
+**Branch**: optimize-gemm-avx512
+**Status**: Pushed to remote - Integration in progress
+**Files**: modules/core/src/matmul_avx512.cpp, modules/core/src/matmul.simd.hpp
+
+**Improvements Made**:
+- Added AVX-512 and AVX2 optimized kernels for matrix multiplication (GEMM)
+- Implemented cache-friendly blocking with configurable block sizes
+- Created micro-kernels: 8x16 tiles for AVX-512, 4x8 tiles for AVX2
+- Uses FMA (Fused Multiply-Add) instructions for better performance
+- Integrated into existing dispatch system via gemm32f function
+
+**Expected Performance Gains**:
+- AVX-512: Process 16 floats per vector operation (vs 8 with AVX2)
+- 2-4x speedup for large matrix multiplications
+- Better cache utilization with blocked algorithm
+- Significant improvement for deep learning and computer vision operations
+
+**Implementation Details**:
+- Block sizes: M=64, N=256, K=256 for cache optimization
+- Micro-kernel sizes: 8x16 (AVX-512), 4x8 (AVX2)
+- Forward declaration in matmul.simd.hpp with conditional compilation
+- Automatically uses optimized path for matrices >= 32x32 without transpose
+- Falls back to baseline for transposed matrices or small sizes
+
+**Testing Notes**:
+- Correctness verified with test program (zero error for various sizes)
+- Performance measured: ~5 GFLOPS on test system
+- AVX-512 support confirmed on development machine
+- Integration requires proper build configuration with AVX512_SKX dispatch
+- Existing GEMM tests in modules/core/test/test_operations.cpp cover functionality
