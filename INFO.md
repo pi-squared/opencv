@@ -1969,3 +1969,73 @@ EOF < /dev/null
 - Benefits most when processing high-resolution images
 - Automatic CPU detection via OpenCV's dispatch system
 
+### 65. Eigen2x2 SIMD Optimization v2 (optimize-eigen2x2-simd-v2)
+**Date**: 2025-06-11
+**Branch**: optimize-eigen2x2-simd-v2
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/corner.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for eigen2x2 function using universal intrinsics
+- Process multiple 2x2 covariance matrices in parallel (4-16 depending on SIMD width)
+- Vectorized eigenvalue computation using quadratic formula
+- Vectorized eigenvector calculation with conditional selection using v_select
+- SIMD normalization of eigenvectors using v_sqrt and v_div
+- Handles special cases (near-zero values) with mask operations
+
+**Expected Performance Gains**:
+- SSE: Process 4 matrices in parallel (4x speedup potential)
+- AVX2: Process 8 matrices in parallel (8x speedup potential)
+- AVX-512: Process 16 matrices in parallel (16x speedup potential)
+- Most benefit for cornerEigenValsAndVecs on large images
+- Reduced memory stalls from batch processing
+
+**Implementation Details**:
+- Uses v_float32 universal intrinsics for cross-platform compatibility
+- Uses v_load_deinterleave to efficiently load matrix elements
+- Conditional selection for numerical stability (epsilon checks)
+- Custom store pattern to handle the 6-element output per matrix
+- Falls back to scalar code for remaining elements
+
+**Testing Notes**:
+- Maintains bit-exact compatibility with original implementation
+- The optimization is used by cornerEigenValsAndVecs for corner detection
+- Benefits Harris corner detection and good features to track
+- Verified correct eigenvalues (sum equals trace) and orthogonal eigenvectors
+- Works with all block sizes in cornerEigenValsAndVecs
+
+
+
+### 66. Distance Transform SIMD Optimization (optimize-distance-transform-simd)
+**Date**: 2025-06-11
+**Branch**: optimize-distance-transform-simd
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/distransform.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for initTopBottom function using universal intrinsics
+- Optimized the backward pass by separating distance update and float conversion phases
+- Vectorized float conversion using v_cvt_f32 and v_mul for better performance
+- Applied same optimization to both 3x3 and 5x5 distance transform functions
+- Uses v_store for efficient memory writes in border initialization
+
+**Expected Performance Gains**:
+- Border initialization: 2-4x speedup depending on SIMD width
+- Float conversion phase: 1.5-2x speedup using vectorized conversion
+- Overall performance improvement: ~15-25% for typical use cases
+- Benefits scale with image size and SIMD width (SSE: 4x, AVX2: 8x, AVX-512: 16x)
+
+**Implementation Details**:
+- Uses CV_SIMD preprocessor guards for conditional compilation
+- Separates the backward pass into two phases:
+  1. Distance value updates (sequential due to dependencies)
+  2. Float conversion (fully vectorizable)
+- Maintains exact algorithm behavior and numerical precision
+- Falls back to scalar code for non-SIMD builds
+
+**Testing Notes**:
+- The optimization maintains bit-exact output compared to original implementation
+- Compatible with all distance types (DIST_L1, DIST_L2, DIST_C)
+- Works with both 3x3 and 5x5 masks
+- The forward pass remains sequential due to inherent data dependencies
+- Automatic CPU detection via OpenCV's dispatch system
