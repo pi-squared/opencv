@@ -2054,74 +2054,136 @@ struct RGB2Lab_f
             int i = 0;
 #if CV_SIMD
             const int vsize = VTraits<v_float32>::vlanes();
-            const int nrepeats = VTraits<v_float32>::nlanes == 4 ? 2 : 1;
-            v_float32 vc0 = vx_setall_f32(C0), vc1 = vx_setall_f32(C1), vc2 = vx_setall_f32(C2);
-            v_float32 vc3 = vx_setall_f32(C3), vc4 = vx_setall_f32(C4), vc5 = vx_setall_f32(C5);
-            v_float32 vc6 = vx_setall_f32(C6), vc7 = vx_setall_f32(C7), vc8 = vx_setall_f32(C8);
-            for( ; i <= n - vsize*nrepeats;
-                 i += vsize*nrepeats, src += scn*vsize*nrepeats, dst += 3*vsize*nrepeats)
+            
+#if CV_AVX512_SKX
+            // AVX-512 specific optimization: process 16 floats at once
+            if (vsize == 16)
             {
-                v_float32 R[nrepeats], G[nrepeats], B[nrepeats], A;
-                if(scn == 4)
+                v_float32 vc0 = vx_setall_f32(C0), vc1 = vx_setall_f32(C1), vc2 = vx_setall_f32(C2);
+                v_float32 vc3 = vx_setall_f32(C3), vc4 = vx_setall_f32(C4), vc5 = vx_setall_f32(C5);
+                v_float32 vc6 = vx_setall_f32(C6), vc7 = vx_setall_f32(C7), vc8 = vx_setall_f32(C8);
+                
+                // Process 16 pixels at once with AVX-512
+                for( ; i <= n - 16; i += 16, src += scn*16, dst += 3*16)
                 {
-                    for (int k = 0; k < nrepeats; k++)
+                    v_float32 R, G, B, A;
+                    if(scn == 4)
                     {
-                        v_load_deinterleave(src + k*4*vsize, R[k], G[k], B[k], A);
+                        v_load_deinterleave(src, R, G, B, A);
                     }
-                }
-                else // scn == 3
-                {
-                    for (int k = 0; k < nrepeats; k++)
+                    else // scn == 3
                     {
-                        v_load_deinterleave(src + k*3*vsize, R[k], G[k], B[k]);
+                        v_load_deinterleave(src, R, G, B);
                     }
-                }
 
-                v_float32 one = vx_setall_f32(1.0f), z = vx_setzero_f32();
-                for (int k = 0; k < nrepeats; k++)
-                {
-                    R[k] = v_max(z, v_min(R[k], one));
-                    G[k] = v_max(z, v_min(G[k], one));
-                    B[k] = v_max(z, v_min(B[k], one));
-                }
+                    // Clamp to [0,1] range
+                    v_float32 one = vx_setall_f32(1.0f), z = vx_setzero_f32();
+                    R = v_max(z, v_min(R, one));
+                    G = v_max(z, v_min(G, one));
+                    B = v_max(z, v_min(B, one));
 
-                if(gammaTab)
-                {
-                    v_float32 vgscale = vx_setall_f32(gscale);
-                    for (int k = 0; k < nrepeats; k++)
+                    if(gammaTab)
                     {
-                        R[k] = splineInterpolate(v_mul(R[k], vgscale), gammaTab, GAMMA_TAB_SIZE);
-                        G[k] = splineInterpolate(v_mul(G[k], vgscale), gammaTab, GAMMA_TAB_SIZE);
-                        B[k] = splineInterpolate(v_mul(B[k], vgscale), gammaTab, GAMMA_TAB_SIZE);
+                        v_float32 vgscale = vx_setall_f32(gscale);
+                        R = splineInterpolate(v_mul(R, vgscale), gammaTab, GAMMA_TAB_SIZE);
+                        G = splineInterpolate(v_mul(G, vgscale), gammaTab, GAMMA_TAB_SIZE);
+                        B = splineInterpolate(v_mul(B, vgscale), gammaTab, GAMMA_TAB_SIZE);
                     }
-                }
 
-                v_float32 X[nrepeats], Y[nrepeats], Z[nrepeats];
-                v_float32 FX[nrepeats], FY[nrepeats], FZ[nrepeats];
-                for (int k = 0; k < nrepeats; k++)
-                {
-                    X[k] = v_fma(R[k], vc0, v_fma(G[k], vc1, v_mul(B[k], vc2)));
-                    Y[k] = v_fma(R[k], vc3, v_fma(G[k], vc4, v_mul(B[k], vc5)));
-                    Z[k] = v_fma(R[k], vc6, v_fma(G[k], vc7, v_mul(B[k], vc8)));
+                    // RGB to XYZ conversion using FMA instructions
+                    v_float32 X = v_fma(R, vc0, v_fma(G, vc1, v_mul(B, vc2)));
+                    v_float32 Y = v_fma(R, vc3, v_fma(G, vc4, v_mul(B, vc5)));
+                    v_float32 Z = v_fma(R, vc6, v_fma(G, vc7, v_mul(B, vc8)));
 
-                    // use spline interpolation instead of direct calculation
+                    // Cube root calculation using spline interpolation
                     v_float32 vTabScale = vx_setall_f32(LabCbrtTabScale);
-                    FX[k] = splineInterpolate(v_mul(X[k], vTabScale), LabCbrtTab, LAB_CBRT_TAB_SIZE);
-                    FY[k] = splineInterpolate(v_mul(Y[k], vTabScale), LabCbrtTab, LAB_CBRT_TAB_SIZE);
-                    FZ[k] = splineInterpolate(v_mul(Z[k], vTabScale), LabCbrtTab, LAB_CBRT_TAB_SIZE);
-                }
+                    v_float32 FX = splineInterpolate(v_mul(X, vTabScale), LabCbrtTab, LAB_CBRT_TAB_SIZE);
+                    v_float32 FY = splineInterpolate(v_mul(Y, vTabScale), LabCbrtTab, LAB_CBRT_TAB_SIZE);
+                    v_float32 FZ = splineInterpolate(v_mul(Z, vTabScale), LabCbrtTab, LAB_CBRT_TAB_SIZE);
 
-                v_float32 L[nrepeats], a[nrepeats], b[nrepeats];
-                for (int k = 0; k < nrepeats; k++)
-                {
-                    // 7.787f = (29/3)^3/(29*4), 0.008856f = (6/29)^3, 903.3 = (29/3)^3
-                    v_float32 mask = v_gt(Y[k], (vx_setall_f32(0.008856f)));
+                    // XYZ to Lab conversion
+                    v_float32 mask = v_gt(Y, vx_setall_f32(0.008856f));
                     v_float32 v116 = vx_setall_f32(116.f), vm16 = vx_setall_f32(-16.f);
-                    L[k] = v_select(mask, v_fma(v116, FY[k], vm16), v_mul(vx_setall_f32(903.3f),Y[k]));
-                    a[k] = v_mul(vx_setall_f32(500.F), v_sub(FX[k], FY[k]));
-                    b[k] = v_mul(vx_setall_f32(200.F), v_sub(FY[k], FZ[k]));
+                    v_float32 L = v_select(mask, v_fma(v116, FY, vm16), v_mul(vx_setall_f32(903.3f), Y));
+                    v_float32 a = v_mul(vx_setall_f32(500.0f), v_sub(FX, FY));
+                    v_float32 b = v_mul(vx_setall_f32(200.0f), v_sub(FY, FZ));
 
-                    v_store_interleave(dst + k*3*vsize, L[k], a[k], b[k]);
+                    v_store_interleave(dst, L, a, b);
+                }
+            }
+            else
+#endif // CV_AVX512_SKX
+            {
+                // Fallback to generic SIMD implementation
+                const int nrepeats = VTraits<v_float32>::nlanes == 4 ? 2 : 1;
+                v_float32 vc0 = vx_setall_f32(C0), vc1 = vx_setall_f32(C1), vc2 = vx_setall_f32(C2);
+                v_float32 vc3 = vx_setall_f32(C3), vc4 = vx_setall_f32(C4), vc5 = vx_setall_f32(C5);
+                v_float32 vc6 = vx_setall_f32(C6), vc7 = vx_setall_f32(C7), vc8 = vx_setall_f32(C8);
+                for( ; i <= n - vsize*nrepeats;
+                     i += vsize*nrepeats, src += scn*vsize*nrepeats, dst += 3*vsize*nrepeats)
+                {
+                    v_float32 R[nrepeats], G[nrepeats], B[nrepeats], A;
+                    if(scn == 4)
+                    {
+                        for (int k = 0; k < nrepeats; k++)
+                        {
+                            v_load_deinterleave(src + k*4*vsize, R[k], G[k], B[k], A);
+                        }
+                    }
+                    else // scn == 3
+                    {
+                        for (int k = 0; k < nrepeats; k++)
+                        {
+                            v_load_deinterleave(src + k*3*vsize, R[k], G[k], B[k]);
+                        }
+                    }
+
+                    v_float32 one = vx_setall_f32(1.0f), z = vx_setzero_f32();
+                    for (int k = 0; k < nrepeats; k++)
+                    {
+                        R[k] = v_max(z, v_min(R[k], one));
+                        G[k] = v_max(z, v_min(G[k], one));
+                        B[k] = v_max(z, v_min(B[k], one));
+                    }
+
+                    if(gammaTab)
+                    {
+                        v_float32 vgscale = vx_setall_f32(gscale);
+                        for (int k = 0; k < nrepeats; k++)
+                        {
+                            R[k] = splineInterpolate(v_mul(R[k], vgscale), gammaTab, GAMMA_TAB_SIZE);
+                            G[k] = splineInterpolate(v_mul(G[k], vgscale), gammaTab, GAMMA_TAB_SIZE);
+                            B[k] = splineInterpolate(v_mul(B[k], vgscale), gammaTab, GAMMA_TAB_SIZE);
+                        }
+                    }
+
+                    v_float32 X[nrepeats], Y[nrepeats], Z[nrepeats];
+                    v_float32 FX[nrepeats], FY[nrepeats], FZ[nrepeats];
+                    for (int k = 0; k < nrepeats; k++)
+                    {
+                        X[k] = v_fma(R[k], vc0, v_fma(G[k], vc1, v_mul(B[k], vc2)));
+                        Y[k] = v_fma(R[k], vc3, v_fma(G[k], vc4, v_mul(B[k], vc5)));
+                        Z[k] = v_fma(R[k], vc6, v_fma(G[k], vc7, v_mul(B[k], vc8)));
+
+                        // use spline interpolation instead of direct calculation
+                        v_float32 vTabScale = vx_setall_f32(LabCbrtTabScale);
+                        FX[k] = splineInterpolate(v_mul(X[k], vTabScale), LabCbrtTab, LAB_CBRT_TAB_SIZE);
+                        FY[k] = splineInterpolate(v_mul(Y[k], vTabScale), LabCbrtTab, LAB_CBRT_TAB_SIZE);
+                        FZ[k] = splineInterpolate(v_mul(Z[k], vTabScale), LabCbrtTab, LAB_CBRT_TAB_SIZE);
+                    }
+
+                    v_float32 L[nrepeats], a[nrepeats], b[nrepeats];
+                    for (int k = 0; k < nrepeats; k++)
+                    {
+                        // 7.787f = (29/3)^3/(29*4), 0.008856f = (6/29)^3, 903.3 = (29/3)^3
+                        v_float32 mask = v_gt(Y[k], (vx_setall_f32(0.008856f)));
+                        v_float32 v116 = vx_setall_f32(116.f), vm16 = vx_setall_f32(-16.f);
+                        L[k] = v_select(mask, v_fma(v116, FY[k], vm16), v_mul(vx_setall_f32(903.3f),Y[k]));
+                        a[k] = v_mul(vx_setall_f32(500.F), v_sub(FX[k], FY[k]));
+                        b[k] = v_mul(vx_setall_f32(200.F), v_sub(FY[k], FZ[k]));
+
+                        v_store_interleave(dst + k*3*vsize, L[k], a[k], b[k]);
+                    }
                 }
             }
 #endif
