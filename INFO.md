@@ -51,12 +51,39 @@
 - Memory overhead is minimal (~80KB for typical use case)
 - Maintains bit-exact compatibility with original implementation
 
+### 3. CLAHE SIMD Optimization v2 (optimize-clahe-simd-v2)
+**Date**: 2025-06-11
+**Branch**: optimize-clahe-simd-v2
+**Status**: Tested and verified
+**File**: modules/imgproc/src/clahe.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for bilinear interpolation in CLAHE using universal intrinsics
+- Process 4 pixels at a time with vectorized float operations
+- Uses v_float32, v_mul, v_add for efficient interpolation computation
+- Manual gather operations for LUT values (no gather in universal intrinsics)
+- Maintains bit-exact compatibility with original implementation
+- Supports both 8-bit (uchar) and 16-bit (ushort) image types
+
+**Expected Performance Gains**:
+- 15-25% improvement in the interpolation phase
+- Performance scales with SIMD width (SSE: 4 floats, future AVX2: 8 floats)
+- Most benefit for larger images where interpolation is significant
+- Reduces computational overhead of bilinear interpolation
+
+**Testing Notes**:
+- Verified bit-exact results with standalone test program
+- SIMD and scalar versions produce identical output
+- Properly handles edge cases (remaining pixels processed with scalar code)
+- Ready for integration testing with full OpenCV test suite
+
 ## What Works
 - SIMD loop unrolling for better ILP (Instruction Level Parallelism)
 - Cache prefetching on supported platforms
 - Bilateral grid algorithm for large kernel optimizations
 - AVX-512 optimizations with proper CPU detection
 - Maintaining algorithmic correctness while improving performance
+- Universal intrinsics for cross-platform SIMD support
 
 ## What Doesn't Work / Challenges
 - Compilation time is very long for the full OpenCV build
@@ -64,6 +91,7 @@
 - AVX-512 specific optimizations require runtime CPU detection (already handled by OpenCV's dispatch system)
 - Bilateral grid has overhead that makes it slower for small kernels
 - Median blur AVX-512 benefits are limited to larger kernel sizes
+- Manual gather operations in SIMD may not be optimal on all architectures
 
 ### 4. Canny Edge Detection AVX-512 Optimization (optimize-canny-avx512)
 **Date**: 2025-06-06
