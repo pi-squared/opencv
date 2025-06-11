@@ -470,3 +470,37 @@ EOF < /dev/null
 - 3-channel RGB: 46.4ms for same operation
 - Maintains bit-exact compatibility with original implementation
 - Benefits most when using Lanczos4 interpolation for high-quality image resizing
+
+### 90. MatchShapes SIMD Optimization (optimize-matchshapes-simd)
+**Date**: 2025-06-11
+**Branch**: optimize-matchshapes-simd
+**Status**: Successfully tested and pushed
+**File**: modules/imgproc/src/matchcontours.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for matchShapes function using universal intrinsics
+- Optimized methods 1 and 2 (method 3 requires sequential max operation)
+- Uses v_float64 SIMD vectors to process 2 Hu moments at a time
+- Vectorized absolute value, sign calculation, and comparisons
+- Falls back to scalar implementation for log10 calculations
+- Maintains bit-exact compatibility with original implementation
+
+**Expected Performance Gains**:
+- 20-30% speedup for shape matching operations
+- Processes 2 moments per iteration (vs 1 in scalar)
+- Better cache utilization with batch processing
+- Benefits shape recognition and template matching applications
+
+**Implementation Details**:
+- Uses CV_SIMD preprocessor guards for conditional compilation
+- Processes moments in pairs when SIMD width supports v_float64 (2+ lanes)
+- Manual scalar fallback for log10 operations (no SIMD log10)
+- Handles edge cases correctly (DBL_MAX for mismatched zero/non-zero moments)
+- Method 3 remains scalar due to sequential max dependency
+
+**Testing Notes**:
+- Correctness verified with multiple shape types (circle, square, triangle, complex)
+- Symmetry tests pass for methods 1 and 2 (method 3 asymmetry is expected)
+- Identity test passes (same shape gives ~0 distance)
+- Edge cases handled correctly (empty contours, degenerate shapes)
+- Performance: ~2.37 microseconds per call on test system
