@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/cmTC_b6425.dir/cpu_sse42.cpp.o -o cmTC_b6425
