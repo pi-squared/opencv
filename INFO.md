@@ -247,11 +247,42 @@
 - Maintains bit-exact compatibility with original implementation
 - Encountered edge case with degenerate slices during testing
 
+### 5. ApproxPolyDP SIMD Optimization (optimize-approxpolydp-simd)
+**Date**: 2025-01-11
+**Branch**: optimize-approxpolydp-simd
+**Status**: Ready to push
+**File**: modules/imgproc/src/approx.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for the Ramer-Douglas-Peucker algorithm distance calculation
+- Optimized the hotspot: finding the farthest point from a line segment
+- Uses universal intrinsics for cross-platform SIMD (SSE2, AVX2, NEON)
+- Processes multiple points in parallel (4-16 depending on SIMD width)
+- Currently optimized for float points only
+
+**Expected Performance Gains**:
+- Float contours: ~2-3x speedup for large contours
+- Most benefit with contours > 100 points
+- Performance scales with SIMD width (SSE: 4x, AVX2: 8x parallelism)
+- Integer contours still use scalar path (future optimization opportunity)
+
+**Testing Notes**:
+- Algorithm produces bit-exact results compared to scalar version
+- Handles edge cases correctly (wrapping indices, small slices)
+- Verified with synthetic test cases
+- Ready for full OpenCV test suite validation
+
+**Implementation Details**:
+- Added calcDistancesSIMD_32f() function for vectorized distance calculation
+- Uses v_float32 universal intrinsics for portability
+- Handles array boundary conditions properly
+- Falls back to scalar for small slices or integer points
+
 ## Future Optimization Opportunities
 1. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
 2. **Template Matching**: The correlation operations in templmatch.cpp could use AVX-512 FMA instructions
 3. **Contour Finding**: The contour tracing algorithms could benefit from SIMD optimization
-4. **ApproxPolyDP Integer**: Extend SIMD optimization to integer point types
+4. **ApproxPolyDP Integer**: Extend current SIMD optimization to integer point types with proper overflow handling
 
 ## Build Notes
 - Use `make -j$(nproc) opencv_imgproc` to build just the imgproc module
