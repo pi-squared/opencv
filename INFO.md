@@ -379,6 +379,40 @@
 - Benchmark shows consistent performance improvements across different image sizes
 - Maintains bit-exact compatibility with original implementation
 
+### 80. Lanczos4 SIMD Optimization (optimize-lanczos4-simd)
+**Date**: 2025-06-11
+**Branch**: optimize-lanczos4-simd
+**Status**: Needs revision - AVX-512 section uses raw intrinsics
+**File**: modules/imgproc/src/imgwarp.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for Lanczos4 interpolation in remap function
+- Optimized single-channel 8-bit images using universal intrinsics
+- Added float type optimization using FMA instructions
+- Partially optimized 3-channel RGB processing
+- Process 8x8 Lanczos kernel more efficiently with SIMD operations
+
+**Issues Found**:
+- AVX-512 section uses raw intrinsics (_mm512_*) instead of OpenCV's universal intrinsics
+- This violates OpenCV coding conventions for portability
+- The AVX-512 code should be removed or rewritten with universal intrinsics
+
+**Expected Performance Gains**:
+- 2-3x speedup for Lanczos4 interpolation on modern processors
+- Better performance for high-quality image warping operations
+- Benefits image rectification and panorama stitching
+
+**Testing Notes**:
+- SIMD logic verified to produce correct results
+- The universal intrinsics sections follow correct patterns
+- Performance baseline: ~326 FPS for 512x512 single-channel remap
+- Maintains bit-exact compatibility with original implementation
+
+**Recommendation**:
+- Remove the AVX-512 raw intrinsics section
+- Keep only the universal intrinsics optimizations
+- Consider adding SIMD optimization for multi-channel case
+
 ## Future Optimization Opportunities
 1. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
 2. **Contour Finding**: The contour tracing algorithms could benefit from SIMD optimization
