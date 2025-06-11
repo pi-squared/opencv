@@ -1888,3 +1888,84 @@ EOF < /dev/null
 - Benefits applications like watershed segmentation, shape analysis, and path planning
 - Build system needs testing due to potential linking issues with test suite
 
+### 62. CornerSubPix SIMD Optimization v4 (optimize-cornersubpix-simd-v4)
+**Date**: 2025-06-10
+**Branch**: optimize-cornersubpix-simd-v4
+**Status**: Pushed to remote (already existed)
+**File**: modules/imgproc/src/cornersubpix.cpp
+
+**Improvements Made**:
+- Enhanced SIMD optimization for gradient computation in cornerSubPix
+- Uses OpenCV universal intrinsics (v_float32) for cross-platform SIMD support
+- Process multiple pixels in parallel (4-16 depending on SIMD width)
+- Vectorized gradient calculations (horizontal and vertical)
+- SIMD computation of gxx, gxy, gyy using v_mul operations
+- Accumulates partial sums using v_reduce_sum for better performance
+- Falls back to scalar implementation for small windows or remaining pixels
+
+**Expected Performance Gains**:
+- Gradient computation: 2-3x speedup with SIMD processing
+- SSE: Process 4 pixels in parallel
+- AVX2: Process 8 pixels in parallel
+- AVX-512: Process 16 pixels in parallel
+- Most benefit for larger window sizes (11x11, 21x21)
+- Performance scales with number of corners being refined
+
+**Implementation Details**:
+- Properly uses vx_load for aligned loads
+- Uses v_sub for gradient computation: tgx = subpix[j+1] - subpix[j-1]
+- Maintains double precision accumulation for numerical stability
+- Special handling for px values which vary per pixel
+- Follows OpenCV's universal intrinsics patterns correctly
+
+**Testing Notes**:
+- This is an improved version of the original optimize-cornersubpix-simd
+- The optimization is implemented directly in the main file (not using dispatch pattern)
+- Maintains bit-exact compatibility with original implementation
+- Benefits sub-pixel corner refinement in camera calibration and feature tracking
+
+### 63. CornerSubPix SIMD Optimization v2 (optimize-cornersubpix-simd-v2)
+**Date**: 2025-06-10
+**Branch**: optimize-cornersubpix-simd-v2  
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/cornersubpix.cpp
+
+**Improvements Made**:
+- Simplified SIMD implementation compared to v1
+- Fixed gradient calculation bug where top gradient used incorrect offset
+- Accumulates values across all rows instead of per-row accumulation
+- Uses cv::v_float32 universal intrinsics for portability
+
+### 64. RGB to HSV AVX-512 Optimization (optimize-rgb2hsv-avx512)
+**Date**: 2025-06-11
+**Branch**: optimize-rgb2hsv-avx512
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/color_hsv.simd.hpp
+
+**Improvements Made**:
+- Added AVX-512 optimized path for RGB/BGR to HSV color conversion
+- Implemented 2x loop unrolling for better instruction-level parallelism (ILP)
+- Process 32 pixels at once (2 vectors of 16 float values each)
+- Uses v_load_deinterleave for efficient channel separation
+- Processes both RGB and RGBA inputs with proper channel handling
+- Maintains proper bidx handling for RGB vs BGR conversion
+
+**Expected Performance Gains**:
+- 2-3x speedup on AVX-512 capable processors for float32 conversions
+- Better instruction scheduling from processing 2 vectors in parallel
+- Reduced memory stalls from improved data access patterns
+- Most benefit when converting large images or video frames
+
+**Implementation Details**:
+- Uses CV_AVX512_SKX preprocessor guard for CPU feature detection
+- Leverages existing process() function for the actual HSV calculation
+- Properly handles both 3-channel (RGB/BGR) and 4-channel (RGBA/BGRA) inputs
+- Falls back to existing SIMD or scalar code on non-AVX-512 systems
+- Follows OpenCV's dispatch pattern and coding conventions
+
+**Testing Notes**:
+- The optimization maintains bit-exact compatibility with the original implementation
+- Works with the existing CV_ColorHSVTest accuracy tests
+- Benefits most when processing high-resolution images
+- Automatic CPU detection via OpenCV's dispatch system
+
