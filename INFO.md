@@ -248,6 +248,40 @@
 - Compatible with existing OpenCV CLAHE tests
 - No changes to public API - optimization is transparent to users
 
+### 81. Contour Moments Optimization (optimize-contour-moments-simd)
+**Date**: 2025-06-11
+**Branch**: optimize-contour-moments-simd
+**Status**: Misleading name - uses loop unrolling, not SIMD
+**File**: modules/imgproc/src/moments.cpp
+
+**Improvements Made**:
+- Added loop unrolling to process 2 contour points at a time
+- Created contourMoments_SIMD_impl helper function (misleading name)
+- Applied optimization for contours with 16+ points
+- Falls back to scalar code for small contours
+
+**Issues Found**:
+- Function is named "SIMD" but doesn't use any SIMD intrinsics
+- Only implements loop unrolling for instruction-level parallelism
+- Could benefit from actual SIMD implementation using v_float64
+
+**Performance Characteristics**:
+- Small contours (< 16 points): No optimization applied
+- Medium contours (16-100 points): ~20-30% speedup from loop unrolling
+- Large contours (> 100 points): Diminishing returns from unrolling alone
+- Measured performance: ~1.15 us for 100-point contour
+
+**Testing Notes**:
+- Correctness verified for various contour shapes
+- Area and centroid calculations remain accurate
+- Edge cases (empty, single point, line) handled correctly
+- All existing tests pass without modification
+
+**Recommendation**:
+- Rename function to reflect actual implementation (loop unrolling)
+- Consider adding true SIMD optimization using v_float64
+- Could benefit from processing 4+ points with actual vector operations
+
 ## Future Optimization Opportunities
 1. **Morphological Operations**: Better SIMD utilization for dilate/erode operations
 2. **Template Matching**: The correlation operations in templmatch.cpp could use AVX-512 FMA instructions
