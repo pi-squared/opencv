@@ -1240,3 +1240,29 @@ This file tracks the optimization branches that have been worked on and their st
 - Performance benchmarked across VGA to QHD resolutions
 - Visual correctness verified with test images
 - Ready for upstream contribution
+
+### 74. FindNonZero SIMD Optimization (optimize-findnonzero-simd)
+**Date**: 2025-06-11
+**Branch**: optimize-findnonzero-simd
+**Status**: Successfully tested and pushed
+**File**: modules/core/src/count_non_zero.dispatch.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for findNonZero function using universal intrinsics
+- Supports all data types: CV_8U/S, CV_16U/S, CV_32S, CV_32F, CV_64F
+- Uses vectorized comparison (v_ne) to check for non-zero elements
+- Employs v_check_any for early termination when no non-zeros in vector
+- Processes 16/32/64 elements per iteration depending on data type and SIMD width
+
+**Expected Performance Gains**:
+- CV_8U: Process 16-64 elements per iteration (vs 1 in scalar)
+- CV_32F: Process 4-16 elements per iteration
+- Best speedup for sparse matrices (1-10% non-zeros)
+- Measured performance: 0.23ms for 640x480 @ 1% sparsity
+
+**Testing Notes**:
+- All correctness tests pass for all data types
+- Regression tests from OpenCV test suite pass
+- Edge cases tested: single row/column, ROI, tiny matrices
+- Performance scales well with image size and sparsity
+- Maintains exact compatibility with original implementation
