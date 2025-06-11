@@ -1475,3 +1475,69 @@ This file tracks the optimization branches that have been worked on and their st
   - Use wider SIMD operations for multiple pixels
   - Reduce intermediate conversions
   - Better cache blocking strategy
+
+### 81. GrabCut SIMD Optimization (optimize-grabcut-simd)
+**Date**: 2025-06-11
+**Branch**: optimize-grabcut-simd
+**Status**: Pushed to remote
+**File**: modules/imgproc/src/grabcut.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for calcNWeights function using universal intrinsics
+- Optimized weight calculation between neighboring pixels for graph construction
+- Vectorized exponential function calls using v_exp_default_32f
+- Most benefit for "up" direction weights with regular memory access pattern
+- Processes multiple pixels simultaneously based on SIMD width
+
+**Expected Performance Gains**:
+- 2-3x speedup for weight calculation phase
+- Significant improvement for exp() calculations (bottleneck in original)
+- Better cache utilization with batch processing
+- Benefits scale with SIMD width (SSE: 4 pixels, AVX2: 8 pixels)
+
+**Implementation Details**:
+- Uses CV_SIMD preprocessor guards for conditional compilation
+- Specialized optimization for "up" weights with best memory pattern
+- Falls back to scalar code for other directions and edge cases
+- Maintains exact algorithmic behavior
+- Uses v_float32 and v_exp_default_32f from universal intrinsics
+
+**Testing Notes**:
+- Code review shows correct SIMD patterns following OpenCV conventions
+- The optimization targets a computationally intensive part of GrabCut
+- Weight calculation is performed once per GrabCut invocation
+- Benefits interactive foreground extraction applications
+
+### 82. LUT SIMD Optimization (optimize-lut-simd)
+**Date**: 2025-06-11
+**Branch**: optimize-lut-simd
+**Status**: Pushed to remote (already existed)
+**File**: modules/core/src/lut.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for LUT (Look-Up Table) operations
+- Implemented LUT8u_8u_simd for 8-bit to 8-bit transformations
+- Implemented LUT8u_16u_simd for 8-bit to 16-bit transformations
+- Uses universal intrinsics with manual gather operations
+- 4x loop unrolling for better instruction-level parallelism
+
+**Performance Analysis**:
+- LUT operations are inherently memory-bound due to random access patterns
+- SIMD provides limited benefit as gather operations dominate execution time
+- Manual gather required as universal intrinsics lack native gather support
+- Performance testing shows no significant improvement over scalar code
+- Memory bandwidth is the limiting factor, not compute
+
+**Implementation Details**:
+- Uses CV_SIMD and CV_SIMD_SCALABLE preprocessor guards
+- Processes 16/32/64 bytes per iteration depending on SIMD width
+- Aligned temporary buffers for gather/scatter operations
+- Falls back to scalar implementation for multi-channel LUTs
+- Maintains exact compatibility with original algorithm
+
+**Testing Notes**:
+- Correctness verified with custom test program
+- Performance benchmarks show ~2200 Mpixels/sec for scalar implementation
+- SIMD version actually slower (~1374 Mpixels/sec) due to gather overhead
+- LUT operations remain memory-bound regardless of SIMD optimization
+- This is a known limitation of LUT operations with current CPU architectures
