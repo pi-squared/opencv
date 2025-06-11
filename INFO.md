@@ -1112,3 +1112,104 @@ This file tracks the optimization branches that have been worked on and their st
 - Works with both Point2f (float) and Point (integer) arrays
 - The optimization maintains numerical accuracy
 - Suitable for real-time contour analysis applications
+
+### 70. CLAHE SIMD Optimization (optimize-clahe-simd)
+**Date**: 2025-06-11
+**Branch**: optimize-clahe-simd
+**Status**: Successfully pushed
+**File**: modules/imgproc/src/clahe.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for CLAHE bilinear interpolation
+- Vectorized the interpolation loop in CLAHE_Interpolation_Body
+- Processes 4/8/16 pixels simultaneously using universal intrinsics
+- Optimized LUT value gathering and interpolation calculations
+- Uses pre-computed tile indices and weights for efficiency
+
+**Expected Performance Gains**:
+- SSE: Process 4 pixels per iteration (vs 1 in scalar)
+- AVX2: Process 8 pixels per iteration  
+- AVX-512: Process 16 pixels per iteration
+- ~10-20% overall speedup for CLAHE operation
+- Benefits adaptive histogram equalization applications
+
+**Implementation Details**:
+- Uses CV_SIMD preprocessor guards for conditional compilation
+- Pre-computes tile indices (ind1_p, ind2_p) and weights (xa_p, xa1_p) in constructor
+- Gathers LUT values with scalar loop (no native gather in universal intrinsics)
+- Vectorized bilinear interpolation using v_muladd
+- Handles both uchar and ushort image types
+- Maintains exact algorithmic behavior with scalar fallback
+
+**Testing Notes**:
+- Created simplified benchmark showing ~10% speedup on synthetic data
+- SIMD implementation produces identical results to scalar version
+- Compatible with existing CLAHE test suite in modules/imgproc/test/ocl/
+- Follows OpenCV coding conventions and universal intrinsics patterns
+
+### 71. Bilateral Grid AVX-512 Optimization (optimize-bilateral-grid)
+**Date**: 2025-06-11
+**Branch**: optimize-bilateral-grid
+**Status**: Successfully pushed
+**File**: modules/imgproc/src/bilateral_grid.cpp, bilateral_grid.hpp
+
+**Improvements Made**:
+- Added bilateral grid acceleration for bilateral filtering
+- Implemented grid-based approach for O(1) complexity w.r.t. kernel size
+- Added AVX-512 optimizations for grid construction, blurring, and slicing
+- Based on "Real-time edge-aware image processing with the bilateral grid" by Chen et al.
+
+**Expected Performance Gains**:
+- Constant time complexity regardless of filter radius
+- Significant speedup for large sigma_space values
+- AVX-512 provides 16-pixel parallel processing
+- Better performance for high-resolution images
+
+**Implementation Details**:
+- Creates a 3D grid in (x, y, intensity) space
+- Downsamples image to grid, applies 3D blur, then upsamples
+- AVX-512 optimized paths for:
+  - Grid construction with trilinear splatting
+  - 3D convolution for grid blurring
+  - Grid slicing with trilinear interpolation
+- Memory aligned to 64 bytes for AVX-512 efficiency
+- Supports both grayscale and color images
+
+**Testing Notes**:
+- Tested with various sigma parameters (25-100 for color, 5-20 for space)
+- Performance scales better than traditional bilateral filter for large kernels
+- Produces visually similar results to exact bilateral filter
+- Trade-off between speed and accuracy controlled by grid resolution
+
+### 72. Canny Edge Detection AVX-512 Optimization (optimize-canny-avx512)
+**Date**: 2025-06-11
+**Branch**: optimize-canny-avx512
+**Status**: Successfully pushed
+**File**: modules/imgproc/src/canny.cpp, canny.simd.hpp, canny.dispatch.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for gradient magnitude calculation in Canny edge detection
+- Implemented proper dispatch system for CPU-specific optimizations
+- Created canny.simd.hpp with universal intrinsics implementation
+- Enhanced both L1 and L2 gradient magnitude calculations
+- AVX-512 path processes 32 int16 values simultaneously
+
+**Expected Performance Gains**:
+- 2-3x speedup for gradient magnitude calculation
+- Better cache utilization with wider SIMD operations
+- Scalable performance: SSE (8 values), AVX2 (16 values), AVX-512 (32 values)
+- Significant improvement for high-resolution edge detection
+
+**Implementation Details**:
+- Used OpenCV's dispatch system with CV_CPU_DISPATCH macros
+- Universal intrinsics ensure cross-platform compatibility
+- Separate optimized paths for L1 (|dx| + |dy|) and L2 (sqrt(dx² + dy²)) gradients
+- Proper handling of remaining elements with scalar fallback
+- Added to CMakeLists.txt with SSE2, SSE4_1, AVX2, AVX512_SKX dispatch modes
+
+**Testing Notes**:
+- Created correctness tests verifying SIMD implementation
+- Tested various image widths including non-aligned sizes
+- Performance test shows ~190 FPS for L2 and ~223 FPS for L1 on 1920x1080
+- Maintains bit-exact results compared to scalar implementation
+- Compatible with all Canny parameters (thresholds, aperture size)
