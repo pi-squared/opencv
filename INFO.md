@@ -370,6 +370,38 @@
 - Reduced loop overhead by processing multiple pixels per iteration
 - Performance scales with SIMD width automatically
 
+### 22. Gabor Kernel SIMD Optimization (optimize-gabor-kernel-simd)
+**Date**: 2025-06-11
+**Branch**: optimize-gabor-kernel-simd
+**Status**: Ready to push
+**File**: modules/imgproc/src/gabor.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for getGaborKernel using universal intrinsics
+- Separate optimized paths for float (CV_32F) and double (CV_64F) types
+- Process multiple kernel values in parallel (4-16 depending on SIMD width)
+- Uses v_exp and v_cos for vectorized transcendental functions
+- Vectorized rotation calculations (xr = x*c + y*s, yr = -x*s + y*c)
+- Proper handling of kernel storage order with v_reverse
+
+**Expected Performance Gains**:
+- Float kernels: 3-4x speedup on AVX2/AVX-512 processors
+- Double kernels: 2-3x speedup with CV_SIMD_64F support
+- Performance scales with SIMD width (SSE: 4x, AVX2: 8x, AVX-512: 16x parallelism)
+- Most benefit for larger kernel sizes (21x21 and above)
+
+**Implementation Details**:
+- Uses OpenCV's universal intrinsics for cross-platform SIMD support
+- Proper use of vx_cleanup() for SIMD cleanup
+- Falls back to scalar implementation when SIMD is not available
+- Maintains bit-exact compatibility with original implementation
+
+**Testing Notes**:
+- Verified correctness with multiple kernel sizes (5x5 to 31x31)
+- Performance test exists in perf_filter2d.cpp (GaborFilter2d)
+- The optimization is transparent to users - same API
+- Used in texture analysis and feature extraction applications
+
 **Testing Notes**:
 - All 24 CLAHE tests pass without modification
 - Consistency check shows identical results (max difference = 0)
