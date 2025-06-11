@@ -132,7 +132,7 @@ void cv::cornerSubPix( InputArray _image, InputOutputArray _corners,
                     cv::v_float32 v_right = cv::vx_load(subpix + j + 1);
                     cv::v_float32 v_left = cv::vx_load(subpix + j - 1);
                     cv::v_float32 v_bottom = cv::vx_load(subpix + j + win_w + 2);
-                    cv::v_float32 v_top = cv::vx_load(subpix + j - win_w - 2);
+                    cv::v_float32 v_top = cv::vx_load(subpix + j - (win_w + 2));
                     
                     cv::v_float32 v_tgx = cv::v_sub(v_right, v_left);
                     cv::v_float32 v_tgy = cv::v_sub(v_bottom, v_top);
