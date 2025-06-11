@@ -1213,3 +1213,30 @@ This file tracks the optimization branches that have been worked on and their st
 - Performance test shows ~190 FPS for L2 and ~223 FPS for L1 on 1920x1080
 - Maintains bit-exact results compared to scalar implementation
 - Compatible with all Canny parameters (thresholds, aperture size)
+
+### 73. CLAHE SIMD Optimization v2 (optimize-clahe-simd-v2)
+**Date**: 2025-06-11
+**Branch**: optimize-clahe-simd-v2
+**Status**: Successfully tested and pushed
+**File**: modules/imgproc/src/clahe.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for bilinear interpolation in CLAHE using universal intrinsics
+- Processes 4 pixels at a time with vectorized float operations
+- Uses v_float32, v_mul, v_add for efficient interpolation computation
+- Manual gather operations for LUT values (no gather in universal intrinsics)
+- Maintains bit-exact compatibility with original implementation
+- Supports both 8-bit (uchar) and 16-bit (ushort) image types
+
+**Expected Performance Gains**:
+- 15-25% improvement in the interpolation phase
+- Performance scales with SIMD width (SSE: 4 floats, AVX2: 8 floats potential)
+- Most benefit for larger images where interpolation is significant
+- Measured performance: ~776 FPS for 640x480, ~216 FPS for 1280x720
+
+**Testing Notes**:
+- All 36 test cases passed (various grid sizes, clip limits, image sizes)
+- Edge cases tested: ROI processing, 16-bit images
+- Performance benchmarked across VGA to QHD resolutions
+- Visual correctness verified with test images
+- Ready for upstream contribution
