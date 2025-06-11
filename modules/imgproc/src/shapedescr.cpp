@@ -296,7 +296,7 @@ double cv::arcLength( InputArray _curve, bool is_closed )
     if( is_float && count >= VTraits<v_float32>::vlanes() * 2 )
     {
         // SIMD optimization for float points
-        v_float32 v_perimeter = vx_setzero<v_float32>();
+        v_float32 v_perimeter = vx_setzero_f32();
         const int vlanes = VTraits<v_float32>::vlanes();
         
         // Process points in groups for better vectorization
@@ -358,7 +358,7 @@ double cv::arcLength( InputArray _curve, bool is_closed )
     else if( !is_float && count >= VTraits<v_float32>::vlanes() * 2 )
     {
         // SIMD optimization for integer points
-        v_float32 v_perimeter = vx_setzero<v_float32>();
+        v_float32 v_perimeter = vx_setzero_f32();
         const int vlanes = VTraits<v_float32>::vlanes();
         
         for( ; i <= count - vlanes; i += vlanes )
