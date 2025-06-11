@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/cmTC_01346.dir/cpu_ssse3.cpp.o -o cmTC_01346
