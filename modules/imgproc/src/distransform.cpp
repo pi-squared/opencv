@@ -40,6 +40,7 @@
 //
 //M*/
 #include "precomp.hpp"
+#include "opencv2/core/hal/intrin.hpp"
 
 namespace cv
 {
@@ -53,9 +54,25 @@ initTopBottom( Mat& temp, int border, unsigned int value )
     Size size = temp.size();
     unsigned int* ttop = (unsigned int*)temp.ptr<int>(0);
     unsigned int* tbottom = (unsigned int*)temp.ptr<int>(size.height - 1);
+    
+#if CV_SIMD
+    const int VECSZ = VTraits<v_uint32>::vlanes();
+    v_uint32 vvalue = vx_setall<unsigned int>(value);
+#endif
+    
     for( int i = 0; i < border; i++ )
     {
-        for( int j = 0; j < size.width; j++ )
+        int j = 0;
+#if CV_SIMD
+        // Vectorized initialization
+        for( ; j <= size.width - VECSZ; j += VECSZ )
+        {
+            v_store(ttop + j, vvalue);
+            v_store(tbottom + j, vvalue);
+        }
+#endif
+        // Handle remaining elements
+        for( ; j < size.width; j++ )
         {
             ttop[j] = value;
             tbottom[j] = value;
@@ -116,10 +133,17 @@ distanceTransform_3x3( const Mat& _src, Mat& _temp, Mat& _dist, const float* met
 
     // backward pass
     float* d = (float*)dist;
+    
+#if CV_SIMD
+    const int VECSZ = VTraits<v_uint32>::vlanes();
+    v_float32 vscale = vx_setall<float>(scale);
+#endif
+    
     for( i = size.height - 1; i >= 0; i-- )
     {
         tmp -= step;
 
+        // First pass: update distance values (must be done sequentially)
         for( j = size.width - 1; j >= 0; j-- )
         {
             unsigned int t0 = tmp[j];
@@ -135,8 +159,24 @@ distanceTransform_3x3( const Mat& _src, Mat& _temp, Mat& _dist, const float* met
                 if( t0 > t ) t0 = t;
                 tmp[j] = t0;
             }
-            d[j] = (float)(t0 * scale);
         }
+        
+        // Second pass: convert to float (can be vectorized)
+        j = 0;
+#if CV_SIMD
+        for( ; j <= size.width - VECSZ; j += VECSZ )
+        {
+            v_uint32 vdist = vx_load(tmp + j);
+            v_float32 vf = v_cvt_f32(v_reinterpret_as_s32(vdist));
+            vf = v_mul(vf, vscale);
+            v_store(d + j, vf);
+        }
+#endif
+        for( ; j < size.width; j++ )
+        {
+            d[j] = (float)(tmp[j] * scale);
+        }
+        
         d -= dststep;
     }
 }
@@ -201,10 +241,17 @@ distanceTransform_5x5( const Mat& _src, Mat& _temp, Mat& _dist, const float* met
 
     // backward pass
     float* d = (float*)dist;
+    
+#if CV_SIMD
+    const int VECSZ = VTraits<v_uint32>::vlanes();
+    v_float32 vscale = vx_setall<float>(scale);
+#endif
+    
     for( i = size.height - 1; i >= 0; i-- )
     {
         tmp -= step;
 
+        // First pass: update distance values (must be done sequentially)
         for( j = size.width - 1; j >= 0; j-- )
         {
             unsigned int t0 = tmp[j];
@@ -228,8 +275,24 @@ distanceTransform_5x5( const Mat& _src, Mat& _temp, Mat& _dist, const float* met
                 if( t0 > t ) t0 = t;
                 tmp[j] = t0;
             }
-            d[j] = (float)(t0 * scale);
         }
+        
+        // Second pass: convert to float (can be vectorized)
+        j = 0;
+#if CV_SIMD
+        for( ; j <= size.width - VECSZ; j += VECSZ )
+        {
+            v_uint32 vdist = vx_load(tmp + j);
+            v_float32 vf = v_cvt_f32(v_reinterpret_as_s32(vdist));
+            vf = v_mul(vf, vscale);
+            v_store(d + j, vf);
+        }
+#endif
+        for( ; j < size.width; j++ )
+        {
+            d[j] = (float)(tmp[j] * scale);
+        }
+        
         d -= dststep;
     }
 }
