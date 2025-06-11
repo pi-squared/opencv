@@ -79,6 +79,37 @@
 - Memory overhead is minimal (~80KB for typical use case)
 - Maintains bit-exact compatibility with original implementation
 
+### 65. RGB to LAB AVX-512 Optimization (optimize-rgb2lab-avx512)
+**Date**: 2025-06-11
+**Branch**: optimize-rgb2lab-avx512
+**Status**: Ready to push
+**File**: modules/imgproc/src/color_lab.cpp
+
+**Improvements Made**:
+- Added AVX-512 specific optimization path for RGB2Lab_f (float version)
+- Process 16 pixels at once with AVX-512 vs 8 with AVX2
+- Simplified loop structure by removing nrepeats complexity for AVX-512
+- Direct v_load_deinterleave/v_store_interleave for 16-element vectors
+- Utilizes AVX-512 FMA instructions for RGB to XYZ matrix multiplication
+- Maintains exact same algorithm precision as existing SIMD code
+
+**Expected Performance Gains**:
+- 2x speedup over AVX2 implementation (16 vs 8 pixels per iteration)
+- Better register utilization with 32 zmm registers vs 16 ymm registers
+- Reduced loop overhead with larger vector processing
+- Most benefit for high-resolution images and batch processing
+
+**Algorithm Details**:
+- RGB to XYZ conversion: X = R*C0 + G*C1 + B*C2 (similar for Y, Z)
+- Cube root approximation using spline interpolation
+- XYZ to Lab conversion with conditional L calculation
+- Maintains sRGB gamma correction when enabled
+
+**Testing Notes**:
+- Maintains bit-exact compatibility with existing implementation
+- Falls back to generic SIMD for non-AVX-512 systems
+- No changes to 8-bit RGB2Lab_b structure (already well optimized)
+
 ## What Works
 - SIMD loop unrolling for better ILP (Instruction Level Parallelism)
 - Cache prefetching on supported platforms
