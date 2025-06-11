@@ -1437,3 +1437,41 @@ This file tracks the optimization branches that have been worked on and their st
 - AVX-512 support confirmed on development machine
 - Integration requires proper build configuration with AVX512_SKX dispatch
 - Existing GEMM tests in modules/core/test/test_operations.cpp cover functionality
+
+### 80. Lanczos4 SIMD Optimization (optimize-lanczos4-simd)
+**Date**: 2025-06-11
+**Branch**: optimize-lanczos4-simd
+**Status**: Pushed to remote - Needs performance tuning
+**File**: modules/imgproc/src/imgwarp.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for remapLanczos4 function using universal intrinsics
+- Implemented vectorized 8x8 kernel computation for Lanczos4 interpolation
+- Supports single-channel 8-bit, 3-channel 8-bit (RGB), and single-channel float
+- Added AVX-512 specific path for maximum performance on supported hardware
+- Uses v_load_expand, v_expand, and v_reduce_sum for efficient computation
+
+**Expected Performance Gains**:
+- Theoretical 4-8x speedup for kernel computation
+- Better memory bandwidth utilization
+- Benefits high-quality image resizing operations
+
+**Implementation Details**:
+- Process 8 pixels per row using SIMD loads
+- Expand 8-bit pixels to 16-bit, then to 32-bit for multiplication
+- Accumulate products in 32-bit precision
+- Proper handling of multi-channel images
+- Falls back to scalar code for unsupported types
+
+**Testing Notes**:
+- Correctness verified - produces identical output to scalar version
+- Performance needs optimization - current implementation shows slower performance
+- Issues identified:
+  1. Too many type conversions (8->16->32 bit)
+  2. Memory access pattern could be improved
+  3. Should process multiple output pixels in parallel
+- All existing Lanczos4 tests pass
+- Future optimization opportunities:
+  - Use wider SIMD operations for multiple pixels
+  - Reduce intermediate conversions
+  - Better cache blocking strategy
