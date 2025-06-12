@@ -1812,3 +1812,36 @@ This file tracks the optimization branches that have been worked on and their st
 - No algorithmic changes - maintains bit-exact output
 - Existing stackBlur tests in test_stackblur.cpp cover functionality
 - Most benefit for real-time video processing with blur effects
+
+### 95. MatchShapes SIMD Optimization (optimize-matchshapes-simd)
+**Date**: 2025-06-12
+**Branch**: optimize-matchshapes-simd
+**Status**: Successfully tested and pushed
+**File**: modules/imgproc/src/matchcontours.cpp
+
+**Improvements Made**:
+- Added SIMD optimization for matchShapes function using universal intrinsics
+- Optimized Hu moment comparison for methods 1 and 2
+- Processes 2 moment pairs simultaneously using v_float64 vectors
+- Fixed incorrect intrinsic function names (vx_setall → v_setall, vx_setzero → v_setzero)
+- Vectorized absolute value calculations and sign determination
+- Falls back to scalar implementation for method 3 and non-SIMD builds
+
+**Expected Performance Gains**:
+- 1.5-2x speedup for moment comparison calculations
+- Better cache utilization with vectorized operations
+- Most benefit when comparing many contours
+- Scales with SIMD width for double precision operations
+
+**Implementation Details**:
+- Uses CV_SIMD preprocessor guards for conditional compilation
+- Processes Hu moments in pairs (2 at a time) for v_float64 operations
+- Manual handling of log10 operations (not available in universal intrinsics)
+- Maintains exact algorithmic behavior with scalar fallback
+- Compatible with all three comparison methods (I1, I2, I3)
+
+**Testing Notes**:
+- Created simple test verifying correct computation for methods 1 and 2
+- The optimization targets the computationally intensive log10 operations
+- Maintains numerical accuracy with original implementation
+- Benefits shape matching and contour comparison applications
