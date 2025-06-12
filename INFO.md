@@ -1749,3 +1749,66 @@ This file tracks the optimization branches that have been worked on and their st
 - Correctness verified (though histogram uniformity varies by image type)
 - Edge cases handled correctly (empty image should throw but doesn't)
 - The optimization focuses on performance while maintaining compatibility
+
+### 93. SpatialGradient SIMD Optimization (optimize-spatialgradient-simd)
+**Date**: 2025-06-12
+**Branch**: optimize-spatialgradient-simd
+**Status**: Successfully tested and pushed
+**File**: modules/imgproc/src/spatialgradient.cpp
+
+**Improvements Made**:
+- Added prefetch hints for better cache utilization in SIMD processing
+- Optimized SIMD kernel to use FMA-friendly operations
+- Added SSE2/AVX-specific prefetch instructions for next iteration data
+- Improved memory access patterns for both vector and scalar paths
+
+**Expected Performance Gains**:
+- ~1400-2100 Mpixels/sec throughput measured on test system
+- Better cache utilization with prefetch hints
+- Improved instruction-level parallelism
+- Benefits edge detection and gradient-based algorithms
+
+**Implementation Details**:
+- Uses _mm_prefetch with _MM_HINT_T0 for cache line prefetching
+- Optimized the spatialGradientKernel_vec template for better FMA usage
+- Prefetches next iteration's data in both SIMD and scalar processing paths
+- Maintains exact Sobel gradient computation (-1 0 1, -2 0 2, -1 0 1)
+
+**Testing Notes**:
+- Performance test shows 1417 Mpixels/sec for 640x480
+- Performance test shows 1602 Mpixels/sec for 1280x720
+- Performance test shows 2098 Mpixels/sec for 1920x1080
+- Output verified to be CV_16SC1 with correct dimensions
+- Gradient values within expected range for 8-bit input
+
+### 94. StackBlur SIMD Optimization (optimize-stackblur-avx512)
+**Date**: 2025-06-12
+**Branch**: optimize-stackblur-avx512
+**Status**: Successfully tested and pushed
+**File**: modules/imgproc/src/stackblur.cpp
+
+**Improvements Made**:
+- Added 4x loop unrolling for uchar (8-bit) stackBlur operations
+- Processes 4 vector lines at once for better instruction-level parallelism
+- Optimized the kernel size 3 case which is most common
+- Uses universal intrinsics (v_uint16, v_uint32) for cross-platform compatibility
+- Better utilization of wider SIMD registers (AVX2/AVX-512)
+
+**Expected Performance Gains**:
+- 2-3x speedup for 8-bit images with small kernels
+- Better cache utilization with unrolled loops
+- Reduced loop overhead
+- Benefits real-time filtering applications
+
+**Implementation Details**:
+- Unrolls the main SIMD loop by 4x for kernel size 3
+- Processes VEC_LINE*4 pixels per iteration
+- Maintains exact algorithmic behavior
+- Falls back to regular SIMD loop for remaining pixels
+- Compatible with all channel counts (1, 3, 4)
+
+**Testing Notes**:
+- The optimization is a performance enhancement only
+- No algorithmic changes - maintains bit-exact output
+- Existing stackBlur tests in test_stackblur.cpp cover functionality
+- Most benefit for real-time video processing with blur effects
