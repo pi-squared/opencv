@@ -169,22 +169,22 @@ void getRectSubPix_Cn_(const _Tp* src, size_t src_step, Size src_size,
             // SIMD optimization for single channel float processing
             if (cn == 1 && std::is_same<_Tp, float>::value && std::is_same<_DTp, float>::value)
             {
-                v_float32 v_a11 = vx_setall_f32((float)a11);
-                v_float32 v_a12 = vx_setall_f32((float)a12);
-                v_float32 v_a21 = vx_setall_f32((float)a21);
-                v_float32 v_a22 = vx_setall_f32((float)a22);
+                v_float32 v_a11 = v_setall((float)a11);
+                v_float32 v_a12 = v_setall((float)a12);
+                v_float32 v_a21 = v_setall((float)a21);
+                v_float32 v_a22 = v_setall((float)a22);
                 
                 const float* src_f = (const float*)src;
-                const float* src_next = src_f + src_step;
+                const float* src_next = (const float*)(src + src_step);
                 float* dst_f = (float*)dst;
                 
                 j = 0;
                 for( ; j <= win_size.width - VTraits<v_float32>::vlanes(); j += VTraits<v_float32>::vlanes() )
                 {
-                    v_float32 s00 = vx_load(src_f + j);
-                    v_float32 s01 = vx_load(src_f + j + 1);
-                    v_float32 s10 = vx_load(src_next + j);
-                    v_float32 s11 = vx_load(src_next + j + 1);
+                    v_float32 s00 = v_load(src_f + j);
+                    v_float32 s01 = v_load(src_f + j + 1);
+                    v_float32 s10 = v_load(src_next + j);
+                    v_float32 s11 = v_load(src_next + j + 1);
                     
                     v_float32 result = v_fma(s00, v_a11, v_mul(s01, v_a12));
                     result = v_fma(s10, v_a21, result);
