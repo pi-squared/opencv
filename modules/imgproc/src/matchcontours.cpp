@@ -60,10 +60,10 @@ double cv::matchShapes(InputArray contour1, InputArray contour2, int method, dou
     // Since we have 7 moments, we'll process them in parallel where possible
     if (method == 1 || method == 2)
     {
-        v_float64 v_eps = vx_setall<double>(eps);
-        v_float64 v_zero = vx_setzero<v_float64>();
-        v_float64 v_one = vx_setall<double>(1.0);
-        v_float64 v_neg_one = vx_setall<double>(-1.0);
+        v_float64 v_eps = v_setall<double>(eps);
+        v_float64 v_zero = v_setzero<v_float64>();
+        v_float64 v_one = v_setall<double>(1.0);
+        v_float64 v_neg_one = v_setall<double>(-1.0);
         
         // Process moments with SIMD
         if (VTraits<v_float64>::vlanes() >= 2)
